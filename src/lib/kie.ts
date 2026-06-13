@@ -1,6 +1,24 @@
 ﻿import { getConfig } from './db';
+import crypto from 'crypto';
 
 const KIE_API_BASE = 'https://api.kie.ai';
+const WEBHOOK_HMAC_KEY = process.env.WEBHOOK_HMAC_KEY || '09795473fe3e5b6cef664b8d61b3fd4872860be763c37dcad0af723914dbf07d';
+
+export function verifyWebhookSignature(
+  taskId: string,
+  timestamp: string,
+  receivedSignature: string
+): boolean {
+  if (!WEBHOOK_HMAC_KEY) return true; // Skip if no key configured
+
+  const dataToSign = `${taskId}.${timestamp}`;
+  const hmac = crypto.createHmac('sha256', WEBHOOK_HMAC_KEY);
+  hmac.update(dataToSign);
+  const expected = hmac.digest('base64');
+
+  if (expected.length !== receivedSignature.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(receivedSignature));
+}
 
 interface KieApiResponse {
   code: number;
@@ -70,38 +88,24 @@ export interface VideoGenerationParams {
 }
 
 function buildRequestBody(params: VideoGenerationParams): Record<string, unknown> {
-  const model = params.model || getConfig('kie_video_model') || 'grok-imagine/image-to-video';
-  const isGrok = model.includes('grok');
-  const isKling = model.includes('kling');
-  const isVeo = model.includes('veo');
+  const model = params.model || 'grok-imagine/image-to-video';
 
   const input: Record<string, unknown> = {
     image_urls: [params.imageUrl],
   };
 
   // Prompt
-  if (params.prompt || !isGrok) {
-    input.prompt = params.prompt || 'Generate a cinematic video from this image';
+  if (params.prompt) {
+    input.prompt = params.prompt;
   }
 
-  // Duration - always string per KIE spec
-  const dur = params.duration || (isGrok ? 10 : 5);
+  // Duration
+  const dur = params.duration || 10;
   input.duration = String(dur);
 
-  if (isGrok) {
-    input.mode = params.mode || getConfig('default_mode') || 'normal';
-    input.resolution = "480p";
-    // aspect_ratio only for multi-image (2+ image_urls) — single image follows image dimensions per spec
-    // Don't send aspect_ratio for single image
-  }
-
-  if (isKling) {
-    input.sound = params.sound ?? (getConfig('default_sound') !== 'false');
-  }
-
-  if (isVeo) {
-    input.sound = params.sound ?? true;
-  }
+  // Grok-specific
+  input.mode = params.mode || 'normal';
+  input.resolution = params.resolution || '720p';
 
   const body: Record<string, unknown> = { model, input };
 
@@ -333,6 +337,292 @@ export async function pollImageTaskCompletion(
 
 export async function downloadImage(url: string): Promise<Buffer> {
   return downloadMedia(url);
+}
+
+// ── Wan 2.7 Image Generation / Editing ───────────────────────────────────
+
+export interface WanImageParams {
+  prompt: string;
+  inputUrls?: string[];       // optional - for image editing / variation
+  aspectRatio?: string;        // "1:1", "16:9", "4:3", "21:9", "3:4", "9:16", "8:1", "1:8"
+  resolution?: string;         // "1K", "2K", "4K"
+  count?: number;              // 1-4 (sequential=false) or 1-12 (sequential=true)
+  enableSequential?: boolean;
+  thinkingMode?: boolean;      // only when sequential=false and no inputUrls
+  watermark?: boolean;
+  seed?: number;               // 0-2147483647
+  nsfwChecker?: boolean;
+  callBackUrl?: string;
+}
+
+function buildWanImageRequestBody(params: WanImageParams): Record<string, unknown> {
+  const model = 'wan/2-7-image';
+
+  const input: Record<string, unknown> = {
+    prompt: params.prompt,
+  };
+
+  if (params.inputUrls && params.inputUrls.length > 0) {
+    input.input_urls = params.inputUrls;
+  }
+
+  // aspect_ratio only meaningful for text-to-image (no inputUrls)
+  if (!params.inputUrls?.length && params.aspectRatio) {
+    input.aspect_ratio = params.aspectRatio;
+  }
+
+  if (params.resolution) {
+    input.resolution = params.resolution;
+  }
+
+  const sequential = params.enableSequential ?? false;
+  if (sequential) {
+    input.enable_sequential = true;
+  }
+
+  const count = params.count ?? 1;
+  input.n = count;
+
+  if (params.thinkingMode && !sequential && (!params.inputUrls || params.inputUrls.length === 0)) {
+    input.thinking_mode = true;
+  }
+
+  if (params.watermark) {
+    input.watermark = true;
+  }
+
+  if (params.seed !== undefined && params.seed !== 0) {
+    input.seed = params.seed;
+  }
+
+  if (params.nsfwChecker) {
+    input.nsfw_checker = true;
+  }
+
+  const body: Record<string, unknown> = { model, input };
+
+  if (params.callBackUrl) {
+    body.callBackUrl = params.callBackUrl;
+  }
+
+  return body;
+}
+
+export async function createWanImageTask(params: WanImageParams): Promise<string> {
+  const body = buildWanImageRequestBody(params);
+
+  const result = await kiePost('/api/v1/jobs/createTask', body);
+
+  if (result.code !== 200) {
+    throw new Error(`KIE Wan 2.7 image task creation failed (${result.code}): ${result.msg}`);
+  }
+
+  return result.data!.taskId!;
+}
+
+// ── Wan 2.7 Image-to-Video ─────────────────────────────────────────────────
+
+export interface WanVideoParams {
+  prompt: string;
+  negativePrompt?: string;
+  firstFrameUrl?: string;       // first-frame-to-video mode
+  lastFrameUrl?: string;        // first-and-last-frame mode
+  firstClipUrl?: string;        // video continuation mode
+  drivingAudioUrl?: string;     // audio-driven generation
+  resolution?: string;          // "720p" | "1080p"
+  duration?: number;            // 2-15, default 5
+  promptExtend?: boolean;       // default true
+  watermark?: boolean;
+  seed?: number;                // 0-2147483647
+  nsfwChecker?: boolean;
+  callBackUrl?: string;
+}
+
+function buildWanVideoRequestBody(params: WanVideoParams): Record<string, unknown> {
+  const model = 'wan/2-7-image-to-video';
+
+  const input: Record<string, unknown> = {
+    prompt: params.prompt,
+    prompt_extend: params.promptExtend ?? true,
+  };
+
+  if (params.negativePrompt) {
+    input.negative_prompt = params.negativePrompt;
+  }
+
+  if (params.firstFrameUrl) {
+    input.first_frame_url = params.firstFrameUrl;
+  }
+
+  if (params.lastFrameUrl) {
+    input.last_frame_url = params.lastFrameUrl;
+  }
+
+  if (params.firstClipUrl) {
+    input.first_clip_url = params.firstClipUrl;
+  }
+
+  if (params.drivingAudioUrl) {
+    input.driving_audio_url = params.drivingAudioUrl;
+  }
+
+  if (params.resolution) {
+    input.resolution = params.resolution;
+  }
+
+  if (params.duration !== undefined) {
+    // Wan expects integer, 2-15
+    input.duration = Math.max(2, Math.min(15, Math.round(params.duration)));
+  }
+
+  if (params.watermark) {
+    input.watermark = true;
+  }
+
+  if (params.seed !== undefined && params.seed !== 0) {
+    input.seed = params.seed;
+  }
+
+  if (params.nsfwChecker) {
+    input.nsfw_checker = true;
+  }
+
+  const body: Record<string, unknown> = { model, input };
+
+  if (params.callBackUrl) {
+    body.callBackUrl = params.callBackUrl;
+  }
+
+  return body;
+}
+
+export async function createWanVideoTask(params: WanVideoParams): Promise<string> {
+  const body = buildWanVideoRequestBody(params);
+
+  const result = await kiePost('/api/v1/jobs/createTask', body);
+
+  if (result.code !== 200) {
+    throw new Error(`KIE Wan 2.7 video task creation failed (${result.code}): ${result.msg}`);
+  }
+
+  return result.data!.taskId!;
+}
+
+// ── Veo 3.1 Lite Image-to-Video ────────────────────────────────────────────
+
+export interface VeoVideoParams {
+  prompt: string;
+  imageUrl: string;
+  callBackUrl?: string;
+}
+
+export async function createVeoVideoTask(params: VeoVideoParams): Promise<string> {
+  const body: Record<string, unknown> = {
+    prompt: params.prompt || 'Generate a cinematic video from this image',
+    imageUrls: [params.imageUrl],
+    model: 'veo3_lite',
+    generationType: 'FIRST_AND_LAST_FRAMES_2_VIDEO',
+    aspect_ratio: '9:16',
+    resolution: '1080p',
+    duration: 8,
+  };
+
+  if (params.callBackUrl) {
+    body.callBackUrl = params.callBackUrl;
+  }
+
+  console.log('[KIE Veo] Sending request to /api/v1/veo/generate:', JSON.stringify(body, null, 2));
+
+  const result = await kiePost('/api/v1/veo/generate', body);
+
+  console.log('[KIE Veo] Response:', JSON.stringify(result));
+
+  if (result.code !== 200) {
+    throw new Error(`KIE Veo 3.1 video task creation failed (${result.code}): ${result.msg}`);
+  }
+
+  if (!result.data?.taskId) {
+    throw new Error(`KIE Veo 3.1 returned 200 but no taskId in response: ${JSON.stringify(result)}`);
+  }
+
+  return result.data.taskId;
+}
+
+// ── Veo 3.1 polling (kebab-case: /api/v1/veo/record-info) ──────────────────
+
+export async function checkVeoTaskStatus(taskId: string): Promise<TaskStatus> {
+  const result = await kieGet(`/api/v1/veo/record-info?taskId=${encodeURIComponent(taskId)}`);
+
+  // 422 = still processing, no record yet
+  if (result.code === 422) {
+    return { taskId, status: 'processing', outputUrls: [], progress: undefined };
+  }
+
+  if (result.code !== 200 && result.code !== 505) {
+    throw new Error(`KIE Veo task query failed (${result.code}): ${result.msg}`);
+  }
+
+  let outputUrls: string[] = [];
+  let state: string = 'pending';
+
+  // Veo format: data.info.resultUrls (JSON string)
+  const info = (result.data as Record<string, unknown> | undefined)?.info as Record<string, unknown> | undefined;
+  if (info?.resultUrls && typeof info.resultUrls === 'string') {
+    try {
+      const parsed = JSON.parse(info.resultUrls);
+      outputUrls = Array.isArray(parsed) ? parsed : [info.resultUrls];
+    } catch {
+      outputUrls = [info.resultUrls];
+    }
+  }
+
+  // Fallback: standard resultJson format
+  if (outputUrls.length === 0 && result.data?.resultJson) {
+    try {
+      const parsed = JSON.parse(result.data.resultJson);
+      const urls = parsed.resultUrls || parsed.images || parsed.videoUrls || [];
+      outputUrls = Array.isArray(urls) ? urls : [];
+    } catch {
+      // resultJson might not be valid JSON
+    }
+  }
+
+  if (outputUrls.length > 0) {
+    state = 'success';
+  } else if (result.data?.state) {
+    state = result.data.state;
+  } else if (result.code === 200) {
+    state = 'processing';
+  }
+
+  return {
+    taskId,
+    status: state as TaskStatus['status'],
+    outputUrl: outputUrls[0],
+    outputUrls,
+    error: result.data?.failMsg || undefined,
+    progress: result.data?.progress,
+  };
+}
+
+export async function pollVeoTaskCompletion(
+  taskId: string,
+  maxAttempts = 120,
+  intervalMs = 15000
+): Promise<TaskStatus> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const status = await checkVeoTaskStatus(taskId);
+
+    if (status.status === 'success' || status.status === 'failed') {
+      return status;
+    }
+
+    console.log(`[KIE] Veo task ${taskId} status: ${status.status} (progress: ${status.progress ?? '?'}%)`);
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error(`Veo task ${taskId} timed out after ${maxAttempts} polling attempts`);
 }
 
 // ── Shared download helper ────────────────────────────────────────────────

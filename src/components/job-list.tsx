@@ -5,9 +5,10 @@ import { useEffect, useState, useCallback } from 'react';
 interface Job {
   id: string;
   source_file_name: string;
-  status: 'pending' | 'queued' | 'processing' | 'completed' | 'failed';
+  status: 'pending' | 'queued' | 'processing' | 'processing_image' | 'processing_video' | 'completed' | 'failed';
   output_url: string | null;
   error: string | null;
+  image_output_file_id: string | null;
   created_at: string;
   completed_at: string | null;
 }
@@ -15,7 +16,8 @@ interface Job {
 const statusColors: Record<string, string> = {
   pending: 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400',
   queued: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
-  processing: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300',
+  processing_image: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300',
+  processing_video: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300',
   completed: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300',
   failed: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300',
 };
@@ -23,6 +25,7 @@ const statusColors: Record<string, string> = {
 export default function JobList() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [loading, setLoading] = useState(true);
+  const [retrying, setRetrying] = useState<string | null>(null);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -45,6 +48,58 @@ export default function JobList() {
   const formatTime = (iso: string) => {
     const date = new Date(iso);
     return date.toLocaleString();
+  };
+
+  const handleRetry = async (jobId: string) => {
+    setRetrying(jobId);
+    try {
+      await fetch('/api/pipeline/retry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId }),
+      });
+      fetchJobs();
+    } catch (err) {
+      console.error('Retry failed:', err);
+    } finally {
+      setRetrying(null);
+    }
+  };
+
+  const handleForceFail = async (jobId: string) => {
+    setRetrying(jobId);
+    try {
+      await fetch('/api/pipeline/force-fail', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId }),
+      });
+      fetchJobs();
+    } catch (err) {
+      console.error('Force fail failed:', err);
+    } finally {
+      setRetrying(null);
+    }
+  };
+
+  const handleSync = async (jobId: string) => {
+    setRetrying(jobId);
+    try {
+      const res = await fetch('/api/pipeline/sync-job', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        alert('Sync failed: ' + (data.error || 'Unknown error'));
+      }
+      fetchJobs();
+    } catch (err) {
+      console.error('Sync failed:', err);
+    } finally {
+      setRetrying(null);
+    }
   };
 
   if (loading) {
@@ -75,6 +130,7 @@ export default function JobList() {
               <th className="pb-3 font-medium">Status</th>
               <th className="pb-3 font-medium">Created</th>
               <th className="pb-3 font-medium">Completed</th>
+              <th className="pb-3 font-medium w-16"></th>
             </tr>
           </thead>
           <tbody>
@@ -98,6 +154,38 @@ export default function JobList() {
                 </td>
                 <td className="py-3 text-zinc-500 text-xs whitespace-nowrap">
                   {job.completed_at ? formatTime(job.completed_at) : '-'}
+                </td>
+                <td className="py-3 text-center">
+                  {(job.status === 'processing_image' || job.status === 'processing_video') && (
+                    <>
+                      <button
+                        onClick={() => handleSync(job.id)}
+                        disabled={retrying === job.id}
+                        className="px-2 py-1 text-xs font-medium text-emerald-600 hover:text-emerald-800 dark:text-emerald-400 dark:hover:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded transition-colors disabled:opacity-50 mr-1"
+                        title="Poll KIE task and advance (for local dev without webhook)"
+                      >
+                        {retrying === job.id ? '...' : '↻ Sync'}
+                      </button>
+                      <button
+                        onClick={() => handleForceFail(job.id)}
+                        disabled={retrying === job.id}
+                        className="px-2 py-1 text-xs font-medium text-amber-600 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20 rounded transition-colors disabled:opacity-50"
+                        title="Mark as failed (stuck)"
+                      >
+                        ⏻
+                      </button>
+                    </>
+                  )}
+                  {job.status === 'failed' && job.image_output_file_id && (
+                    <button
+                      onClick={() => handleRetry(job.id)}
+                      disabled={retrying === job.id}
+                      className="px-2 py-1 text-xs font-medium text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded transition-colors disabled:opacity-50"
+                      title="Retry video generation only (image already generated)"
+                    >
+                      {retrying === job.id ? '...' : '⟳ Retry'}
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}

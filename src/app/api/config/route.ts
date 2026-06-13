@@ -21,8 +21,6 @@ export async function GET() {
     return NextResponse.json({
       config: {
         kie_api_key: config.kie_api_key ? '••••••••' : '',
-        kie_video_model: config.kie_video_model || 'grok-imagine/image-to-video',
-        kie_image_model: config.kie_image_model || 'grok-imagine/image-to-image',
         pipeline_mode: config.pipeline_mode || 'image-to-image',
         drive_input_folder: config.drive_input_folder || config.drive_source_folder || '',
         drive_image_output_folder: config.drive_image_output_folder || config.drive_source_folder || '',
@@ -36,10 +34,6 @@ export async function GET() {
         text_image_resolution: config.text_image_resolution || '1024x1024',
         default_prompt: config.default_prompt || '',
         default_duration: config.default_duration || '10',
-        default_sound: config.default_sound || 'false',
-        default_mode: config.default_mode || 'normal',
-        default_resolution: config.default_resolution || '480p',
-        default_aspect_ratio: config.default_aspect_ratio || '',
         schedule_cron: config.schedule_cron || '0 8 * * *',
         schedule_timezone: config.schedule_timezone || 'Asia/Jakarta',
         google_client_id: config.google_client_id || '',
@@ -60,8 +54,6 @@ export async function POST(request: NextRequest) {
 
     const fields = [
       'kie_api_key',
-      'kie_video_model',
-      'kie_image_model',
       'pipeline_mode',
       'google_client_id',
       'google_client_secret',
@@ -78,10 +70,6 @@ export async function POST(request: NextRequest) {
       'text_image_resolution',
       'default_prompt',
       'default_duration',
-      'default_sound',
-      'default_mode',
-      'default_resolution',
-      'default_aspect_ratio',
       'schedule_cron',
       'schedule_timezone',
     ];
