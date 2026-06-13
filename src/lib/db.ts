@@ -168,10 +168,17 @@ export function markFileProcessed(fileId: string): void {
 }
 
 // Config helpers
+
+const ENV_FALLBACKS: Record<string, string | undefined> = {
+  kie_api_key: process.env.KIE_API_KEY,
+  google_client_id: process.env.GOOGLE_CLIENT_ID,
+  google_client_secret: process.env.GOOGLE_CLIENT_SECRET,
+};
+
 export function getConfig(key: string): string | undefined {
   const database = getDb();
   const row = database.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined;
-  return row?.value;
+  return row?.value || ENV_FALLBACKS[key];
 }
 
 export function setConfig(key: string, value: string): void {
