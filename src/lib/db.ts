@@ -1,7 +1,10 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 
-const DB_PATH = path.join(process.cwd(), 'data', 'pipeline.db');
+const isVercel = !!process.env.VERCEL;
+const DB_PATH = isVercel
+  ? path.join('/tmp', 'pipeline.db')
+  : path.join(process.cwd(), 'data', 'pipeline.db');
 
 let db: Database.Database | null = null;
 
