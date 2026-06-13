@@ -118,6 +118,16 @@ export default function Dashboard() {
             >
               Settings
             </button>
+            <button
+              onClick={async () => {
+                await fetch('/api/auth/logout', { method: 'POST' });
+                window.location.href = '/login';
+              }}
+              className="px-3 py-2 text-sm text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+              title="Sign out"
+            >
+              ⏻
+            </button>
           </div>
         </div>
       </header>
