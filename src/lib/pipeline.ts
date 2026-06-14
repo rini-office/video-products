@@ -328,8 +328,10 @@ export async function retryJobVideo(jobId: string): Promise<{ success: boolean; 
     const videoName = job.source_file_name.replace(/\.[^.]+$/, '') + '_video.mp4';
     const uploadedVideoId = await uploadFile(videoOutputFolderId, videoName, videoBuffer, 'video/mp4');
 
-    // Send to Telegram video bot (fire-and-forget)
-    sendVideoToTelegram(videoBuffer, videoName, `Video: ${videoName}`).catch(() => {});
+    // Send to Telegram video bot (fire-and-forget — failure logged but does not block pipeline)
+    sendVideoToTelegram(videoBuffer, videoName, `Video: ${videoName}`)
+      .then(ok => { if (!ok) console.warn(`[Retry] Telegram video send failed for ${videoName}`); })
+      .catch(err => console.error(`[Retry] Telegram video send error:`, err));
 
     await updateJob(jobId, {
       status: 'completed',
@@ -386,8 +388,10 @@ export async function syncJob(jobId: string): Promise<{ success: boolean; status
       const uploadedImageId = await uploadFile(imageOutputFolderId, job.source_file_name, imageBuffer, 'image/png');
       console.log(`[Sync] Image uploaded: ${uploadedImageId}`);
 
-      // Send to Telegram image bot (fire-and-forget)
-      sendImageToTelegram(imageBuffer, job.source_file_name, `Enhanced: ${job.source_file_name}`).catch(() => {});
+      // Send to Telegram image bot (fire-and-forget — failure logged but does not block pipeline)
+      sendImageToTelegram(imageBuffer, job.source_file_name, `Enhanced: ${job.source_file_name}`)
+        .then(ok => { if (!ok) console.warn(`[Sync] Telegram image send failed for ${job.source_file_name}`); })
+        .catch(err => console.error(`[Sync] Telegram image send error:`, err));
 
       await updateJob(jobId, { image_output_file_id: uploadedImageId, source_file_id: uploadedImageId });
       await markFileProcessed(job.source_file_id);
@@ -450,8 +454,10 @@ export async function syncJob(jobId: string): Promise<{ success: boolean; status
       const videoName = job.source_file_name.replace(/\.[^.]+$/, '') + '_video.mp4';
       const uploadedVideoId = await uploadFile(videoOutputFolderId, videoName, videoBuffer, 'video/mp4');
 
-      // Send to Telegram video bot (fire-and-forget)
-      sendVideoToTelegram(videoBuffer, videoName, `Video: ${videoName}`).catch(() => {});
+      // Send to Telegram video bot (fire-and-forget — failure logged but does not block pipeline)
+      sendVideoToTelegram(videoBuffer, videoName, `Video: ${videoName}`)
+        .then(ok => { if (!ok) console.warn(`[Sync] Telegram video send failed for ${videoName}`); })
+        .catch(err => console.error(`[Sync] Telegram video send error:`, err));
 
       await updateJob(jobId, {
         status: 'completed',

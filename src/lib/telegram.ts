@@ -10,6 +10,8 @@ import { getConfig } from './db';
  */
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB Telegram bot limit
+const UPLOAD_TIMEOUT_MS = 60_000; // 60 seconds
 
 interface TelegramResult {
    ok: boolean;
@@ -32,25 +34,42 @@ async function sendToTelegram(
       return false; // not configured — silently skip
    }
 
+   // Check Telegram's 50 MB file size limit
+   if (buffer.length > MAX_FILE_SIZE) {
+      console.warn(
+         `[Telegram] ${method} skipped: file too large ` +
+         `(${(buffer.length / 1024 / 1024).toFixed(1)}MB > 50MB limit) for ${fileName}`,
+      );
+      return false;
+   }
+
    const url = `${TELEGRAM_API_BASE}/bot${token}/${method}`;
    const formData = new FormData();
    formData.append('chat_id', chatId);
 
    const fieldName = method === 'sendPhoto' ? 'photo' : 'video';
-   const ext = fileName.split('.').pop() || (method === 'sendPhoto' ? 'png' : 'mp4');
-   // Convert Buffer to Uint8Array for Blob compatibility
-   formData.append(fieldName, new Blob([new Uint8Array(buffer)]), `${fileName}.${ext}`);
+   // Use File (standard Web API). Buffer is backed by ArrayBuffer at runtime;
+   // cast needed because @types/node declares Buffer<ArrayBufferLike>
+   // while the DOM BlobPart expects ArrayBufferView<ArrayBuffer>.
+   formData.append(fieldName, new File([buffer as BlobPart], fileName));
 
    if (caption) {
       formData.append('caption', caption);
    }
 
+   const controller = new AbortController();
+   const timeout = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+
    try {
-      const response = await fetch(url, { method: 'POST', body: formData });
+      const response = await fetch(url, {
+         method: 'POST',
+         body: formData,
+         signal: controller.signal,
+      });
       const result: TelegramResult = await response.json();
 
       if (!result.ok) {
-         console.error(`[Telegram] ${method} failed:`, result.description);
+         console.error(`[Telegram] ${method} API error:`, result.description);
          return false;
       }
 
@@ -58,14 +77,21 @@ async function sendToTelegram(
       return true;
    } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[Telegram] ${method} network error:`, msg);
+      console.error(`[Telegram] ${method} network error for ${fileName}:`, msg);
       return false;
+   } finally {
+      clearTimeout(timeout);
    }
 }
 
 /**
  * Sends an image to the Telegram image bot.
  * Configure via `telegram_image_bot_token` and `telegram_image_chat_id` config keys.
+ *
+ * @param buffer  The image binary data
+ * @param fileName  The filename WITH extension (e.g. "photo.png")
+ * @param caption  Optional caption text
+ * @returns true if sent successfully, false if skipped/errored
  */
 export async function sendImageToTelegram(
    buffer: Buffer,
@@ -85,6 +111,11 @@ export async function sendImageToTelegram(
 /**
  * Sends a video to the Telegram video bot.
  * Configure via `telegram_video_bot_token` and `telegram_video_chat_id` config keys.
+ *
+ * @param buffer  The video binary data
+ * @param fileName  The filename WITH extension (e.g. "video.mp4")
+ * @param caption  Optional caption text
+ * @returns true if sent successfully, false if skipped/errored
  */
 export async function sendVideoToTelegram(
    buffer: Buffer,
