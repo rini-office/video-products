@@ -47,15 +47,16 @@ async function sendToTelegram(
    formData.append('chat_id', chatId);
 
    const fieldName = method === 'sendPhoto' ? 'photo' : 'video';
-   // Pass Buffer directly — undici (Node.js fetch) supports this at runtime.
-   // The `as unknown as` cast avoids TS DOM-type mismatch (BlobPart vs Buffer).
-   (formData as unknown as Record<string, (name: string, value: unknown, filename?: string) => void>)
-      .append(fieldName, buffer, fileName);
+   // File extends Blob — satisfies FormData.append's runtime type check.
+   // Cast needed because @types/node Buffer<ArrayBufferLike> conflicts with DOM BlobPart.
+   formData.append(fieldName, new File([buffer as BlobPart], fileName));
 
    if (caption) {
       formData.append('caption', caption);
    }
 
+   // No AbortController — Node.js undici has a known deadlock with
+   // AbortSignal + FormData streams. TCP keepalive handles hung connections naturally.
    try {
       const response = await fetch(url, { method: 'POST', body: formData });
       const result: TelegramResult = await response.json();
@@ -77,11 +78,6 @@ async function sendToTelegram(
 /**
  * Sends an image to the Telegram image bot.
  * Configure via `telegram_image_bot_token` and `telegram_image_chat_id` config keys.
- *
- * @param buffer  The image binary data
- * @param fileName  The filename WITH extension (e.g. "photo.png")
- * @param caption  Optional caption text
- * @returns true if sent successfully, false if skipped/errored
  */
 export async function sendImageToTelegram(
    buffer: Buffer,
@@ -101,11 +97,6 @@ export async function sendImageToTelegram(
 /**
  * Sends a video to the Telegram video bot.
  * Configure via `telegram_video_bot_token` and `telegram_video_chat_id` config keys.
- *
- * @param buffer  The video binary data
- * @param fileName  The filename WITH extension (e.g. "video.mp4")
- * @param caption  Optional caption text
- * @returns true if sent successfully, false if skipped/errored
  */
 export async function sendVideoToTelegram(
    buffer: Buffer,
