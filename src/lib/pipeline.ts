@@ -13,6 +13,8 @@ import {
 } from './kie';
 import { createJob, updateJob, getJob, isFileProcessed, markFileProcessed, getConfig } from './db';
 
+const isVercel = !!process.env.VERCEL;
+
 interface PipelineResult {
   success: boolean;
   processed: number;
@@ -34,7 +36,7 @@ export async function runPipeline(
   imageOutputFolderId: string,
   videoOutputFolderId: string
 ): Promise<PipelineResult> {
-  const pipelineMode = getConfig('pipeline_mode') || 'image-to-image';
+  const pipelineMode = await getConfig('pipeline_mode') || 'image-to-image';
 
   if (pipelineMode === 'text-to-image') {
     return runTextToImagePipeline(imageOutputFolderId, videoOutputFolderId);
@@ -62,15 +64,15 @@ async function runImageToImagePipeline(
   const images = await listImagesInFolder(inputFolderId);
   console.log(`[Pipeline] Found ${images.length} images in input folder`);
 
-  const enhancePrompt = getConfig('default_image_to_image_prompt') || 'Enhance this image, improve quality, add cinematic lighting';
-  const imageAspectRatio = getConfig('image_aspect_ratio') || 'auto';
-  const imageResolution = getConfig('image_resolution') || '1K';
-  const imageOutputFormat = getConfig('image_output_format') || 'jpg';
-  const defaultDuration = parseInt(getConfig('default_duration') || '10', 10);
+  const enhancePrompt = await getConfig('default_image_to_image_prompt') || 'Enhance this image, improve quality, add cinematic lighting';
+  const imageAspectRatio = await getConfig('image_aspect_ratio') || 'auto';
+  const imageResolution = await getConfig('image_resolution') || '1K';
+  const imageOutputFormat = await getConfig('image_output_format') || 'jpg';
+  const defaultDuration = parseInt(await getConfig('default_duration') || '10', 10);
   const callbackUrl = getCallbackUrl();
 
   for (const image of images) {
-    if (isFileProcessed(image.id)) {
+    if (await isFileProcessed(image.id)) {
       console.log(`[Pipeline] Skipping already processed: ${image.name}`);
       continue;
     }
@@ -84,7 +86,7 @@ async function runImageToImagePipeline(
         imageUrl = await getFileUrl(image.id);
       }
 
-      createJob({
+      await createJob({
         id: jobId,
         source_file_name: enhancedName,
         source_file_id: image.id,
@@ -114,7 +116,7 @@ async function runImageToImagePipeline(
         callBackUrl: callbackUrl,
       });
 
-      updateJob(jobId, { image_gen_task_id: imageTaskId });
+      await updateJob(jobId, { image_gen_task_id: imageTaskId });
       result.processed++;
       console.log(`[Pipeline] Image task submitted: ${imageTaskId} (job ${jobId})`);
 
@@ -122,9 +124,9 @@ async function runImageToImagePipeline(
       const errorMsg = error instanceof Error ? error.message : String(error);
       console.error(`[Pipeline] Failed submitting: ${image.name} - ${errorMsg}`);
 
-      if (!getJob(jobId)) {
+      if (!(await getJob(jobId))) {
         try {
-          createJob({
+          await createJob({
             id: jobId,
             source_file_name: enhancedName,
             source_file_id: '',
@@ -143,7 +145,7 @@ async function runImageToImagePipeline(
       }
 
       try {
-        updateJob(jobId, { status: 'failed', error: errorMsg, completed_at: new Date().toISOString() });
+        await updateJob(jobId, { status: 'failed', error: errorMsg, completed_at: new Date().toISOString() });
       } catch { /* ignore */ }
 
       result.failed++;
@@ -172,10 +174,10 @@ async function runTextToImagePipeline(
 
   console.log(`[Pipeline] Text-to-Image (async) - image out: ${imageOutputFolderId}`);
 
-  const imagePrompt = getConfig('default_image_prompt') || 'A beautiful cinematic scene, high quality, photorealistic';
-  const imageCount = parseInt(getConfig('image_count') || '1', 10);
-  const imageResolution = getConfig('text_image_resolution') || '1024x1024';
-  const defaultDuration = parseInt(getConfig('default_duration') || '10', 10);
+  const imagePrompt = await getConfig('default_image_prompt') || 'A beautiful cinematic scene, high quality, photorealistic';
+  const imageCount = parseInt(await getConfig('image_count') || '1', 10);
+  const imageResolution = await getConfig('text_image_resolution') || '1024x1024';
+  const defaultDuration = parseInt(await getConfig('default_duration') || '10', 10);
   const callbackUrl = getCallbackUrl();
 
   const variantSuffixes = ['', 'variant B', 'variant C', 'variant D', 'variant E'];
@@ -189,7 +191,7 @@ async function runTextToImagePipeline(
     console.log(`[Pipeline] Submitting image ${i + 1}/${imageCount}: "${prompt.substring(0, 80)}..."`);
 
     try {
-      createJob({
+      await createJob({
         id: jobId,
         source_file_name: imageName,
         source_file_id: '',
@@ -207,7 +209,6 @@ async function runTextToImagePipeline(
 
       result.jobIds.push(jobId);
 
-      // Submit text-to-image task (async — webhook handles result)
       const imageTaskId = await generateImage({
         prompt,
         model: 'grok-imagine/text-to-image',
@@ -216,7 +217,7 @@ async function runTextToImagePipeline(
         callBackUrl: callbackUrl,
       });
 
-      updateJob(jobId, { image_gen_task_id: imageTaskId });
+      await updateJob(jobId, { image_gen_task_id: imageTaskId });
       result.processed++;
       console.log(`[Pipeline] Image task submitted: ${imageTaskId} (job ${jobId})`);
 
@@ -224,9 +225,9 @@ async function runTextToImagePipeline(
       const errorMsg = error instanceof Error ? error.message : String(error);
       console.error(`[Pipeline] Failed submitting ${i + 1}/${imageCount}: ${errorMsg}`);
 
-      if (!getJob(jobId)) {
+      if (!(await getJob(jobId))) {
         try {
-          createJob({
+          await createJob({
             id: jobId,
             source_file_name: imageName,
             source_file_id: '',
@@ -245,7 +246,7 @@ async function runTextToImagePipeline(
       }
 
       try {
-        updateJob(jobId, { status: 'failed', error: errorMsg, completed_at: new Date().toISOString() });
+        await updateJob(jobId, { status: 'failed', error: errorMsg, completed_at: new Date().toISOString() });
       } catch { /* ignore */ }
 
       result.failed++;
@@ -258,10 +259,14 @@ async function runTextToImagePipeline(
   return result;
 }
 
-// ── Retry: video-only (sync — manual trigger, acceptable for dev/VPS) ──────
+// ── Retry: video-only (local dev / VPS only — polling exceeds Vercel timeout) ──
 
 export async function retryJobVideo(jobId: string): Promise<{ success: boolean; videoUrl?: string; error?: string }> {
-  const job = getJob(jobId);
+  if (isVercel) {
+    return { success: false, error: 'retryJobVideo is not available on Vercel (long polling exceeds serverless timeout). Use locally.' };
+  }
+
+  const job = await getJob(jobId);
   if (!job) {
     return { success: false, error: 'Job not found' };
   }
@@ -270,17 +275,17 @@ export async function retryJobVideo(jobId: string): Promise<{ success: boolean; 
     return { success: false, error: 'No enhanced/generated image found — cannot retry video-only' };
   }
 
-  const defaultPrompt = getConfig('default_prompt') || undefined;
-  const defaultDuration = parseInt(getConfig('default_duration') || '10', 10);
+  const defaultPrompt = await getConfig('default_prompt') || undefined;
+  const defaultDuration = parseInt(await getConfig('default_duration') || '10', 10);
   const callbackUrl = getCallbackUrl();
-  const videoOutputFolderId = getConfig('drive_dest_folder');
+  const videoOutputFolderId = await getConfig('drive_dest_folder');
 
   if (!videoOutputFolderId) {
     return { success: false, error: 'Video output folder not configured' };
   }
 
   try {
-    updateJob(jobId, { status: 'processing_video', error: null });
+    await updateJob(jobId, { status: 'processing_video', error: null });
 
     const driveImageUrl = await getFileUrl(job.image_output_file_id);
     console.log(`[Retry] Got Drive image URL for job ${jobId}`);
@@ -294,7 +299,7 @@ export async function retryJobVideo(jobId: string): Promise<{ success: boolean; 
       callBackUrl: callbackUrl,
     });
 
-    updateJob(jobId, { kie_task_id: videoTaskId });
+    await updateJob(jobId, { kie_task_id: videoTaskId });
     console.log(`[Retry] Video task created: ${videoTaskId}`);
 
     const videoResult = await checkTaskStatus(videoTaskId);
@@ -322,7 +327,7 @@ export async function retryJobVideo(jobId: string): Promise<{ success: boolean; 
     const videoName = job.source_file_name.replace(/\.[^.]+$/, '') + '_video.mp4';
     const uploadedVideoId = await uploadFile(videoOutputFolderId, videoName, videoBuffer, 'video/mp4');
 
-    updateJob(jobId, {
+    await updateJob(jobId, {
       status: 'completed',
       output_url: videoUrl,
       output_file_id: uploadedVideoId,
@@ -336,16 +341,20 @@ export async function retryJobVideo(jobId: string): Promise<{ success: boolean; 
     const errorMsg = error instanceof Error ? error.message : String(error);
     console.error(`[Retry] Job ${jobId} failed: ${errorMsg}`);
 
-    updateJob(jobId, { status: 'failed', error: errorMsg, completed_at: new Date().toISOString() });
+    await updateJob(jobId, { status: 'failed', error: errorMsg, completed_at: new Date().toISOString() });
 
     return { success: false, error: errorMsg };
   }
 }
 
-// ── Manual sync: advance stuck job (for local dev without webhook) ──────
+// ── Manual sync: advance stuck job (local dev / VPS only) ──────
 
 export async function syncJob(jobId: string): Promise<{ success: boolean; status: string; error?: string }> {
-  const job = getJob(jobId);
+  if (isVercel) {
+    return { success: false, status: 'blocked', error: 'syncJob is not available on Vercel (long polling exceeds serverless timeout). Use locally.' };
+  }
+
+  const job = await getJob(jobId);
   if (!job) {
     return { success: false, status: 'not_found', error: 'Job not found' };
   }
@@ -354,13 +363,12 @@ export async function syncJob(jobId: string): Promise<{ success: boolean; status
   if ((job.status === 'processing_image' || job.status === 'pending') && job.image_gen_task_id) {
     try {
       const { pollImageTaskCompletion, downloadImage } = await import('./kie');
-      const { uploadFile, getFileUrl } = await import('./drive');
 
       console.log(`[Sync] Polling image task: ${job.image_gen_task_id}`);
       const imageResult = await pollImageTaskCompletion(job.image_gen_task_id, 60, 10000);
 
       if (imageResult.status !== 'success' || imageResult.imageUrls.length === 0) {
-        updateJob(jobId, {
+        await updateJob(jobId, {
           status: 'failed',
           error: imageResult.error || 'Image task failed',
           completed_at: new Date().toISOString(),
@@ -368,20 +376,18 @@ export async function syncJob(jobId: string): Promise<{ success: boolean; status
         return { success: false, status: 'failed', error: imageResult.error || 'Image task failed' };
       }
 
-      // Download and upload image
       const imageUrl = imageResult.imageUrls[0];
       const imageBuffer = await downloadImage(imageUrl);
-      const imageOutputFolderId = getConfig('drive_image_output_folder') || getConfig('drive_source_folder') || '';
+      const imageOutputFolderId = await getConfig('drive_image_output_folder') || await getConfig('drive_source_folder') || '';
       const uploadedImageId = await uploadFile(imageOutputFolderId, job.source_file_name, imageBuffer, 'image/png');
       console.log(`[Sync] Image uploaded: ${uploadedImageId}`);
 
-      updateJob(jobId, { image_output_file_id: uploadedImageId, source_file_id: uploadedImageId });
-      markFileProcessed(job.source_file_id);
+      await updateJob(jobId, { image_output_file_id: uploadedImageId, source_file_id: uploadedImageId });
+      await markFileProcessed(job.source_file_id);
 
-      // Trigger video
       const driveImageUrl = await getFileUrl(uploadedImageId);
-      const defaultPrompt = getConfig('default_prompt') || undefined;
-      const defaultDuration = parseInt(getConfig('default_duration') || '10', 10);
+      const defaultPrompt = await getConfig('default_prompt') || undefined;
+      const defaultDuration = parseInt(await getConfig('default_duration') || '10', 10);
       const callbackUrl = getCallbackUrl();
 
       const videoTaskId = await createImageToVideoTask({
@@ -393,13 +399,13 @@ export async function syncJob(jobId: string): Promise<{ success: boolean; status
         callBackUrl: callbackUrl,
       });
 
-      updateJob(jobId, { kie_task_id: videoTaskId, status: 'processing_video' });
+      await updateJob(jobId, { kie_task_id: videoTaskId, status: 'processing_video' });
       console.log(`[Sync] Video task created: ${videoTaskId}`);
       return { success: true, status: 'processing_video' };
 
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      updateJob(jobId, { status: 'failed', error: msg, completed_at: new Date().toISOString() });
+      await updateJob(jobId, { status: 'failed', error: msg, completed_at: new Date().toISOString() });
       return { success: false, status: 'failed', error: msg };
     }
   }
@@ -423,7 +429,7 @@ export async function syncJob(jobId: string): Promise<{ success: boolean; status
       }
 
       if (videoResult.status !== 'success' || (!videoResult.outputUrl && !videoResult.outputUrls?.length)) {
-        updateJob(jobId, {
+        await updateJob(jobId, {
           status: 'failed',
           error: videoResult.error || 'Video generation failed',
           completed_at: new Date().toISOString(),
@@ -433,11 +439,11 @@ export async function syncJob(jobId: string): Promise<{ success: boolean; status
 
       const videoUrl = videoResult.outputUrl || videoResult.outputUrls![0];
       const videoBuffer = await downloadVideo(videoUrl);
-      const videoOutputFolderId = getConfig('drive_dest_folder') || '';
+      const videoOutputFolderId = await getConfig('drive_dest_folder') || '';
       const videoName = job.source_file_name.replace(/\.[^.]+$/, '') + '_video.mp4';
       const uploadedVideoId = await uploadFile(videoOutputFolderId, videoName, videoBuffer, 'video/mp4');
 
-      updateJob(jobId, {
+      await updateJob(jobId, {
         status: 'completed',
         output_url: videoUrl,
         output_file_id: uploadedVideoId,
@@ -449,7 +455,7 @@ export async function syncJob(jobId: string): Promise<{ success: boolean; status
 
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      updateJob(jobId, { status: 'failed', error: msg, completed_at: new Date().toISOString() });
+      await updateJob(jobId, { status: 'failed', error: msg, completed_at: new Date().toISOString() });
       return { success: false, status: 'failed', error: msg };
     }
   }

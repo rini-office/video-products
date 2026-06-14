@@ -7,7 +7,7 @@ export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const limit = parseInt(searchParams.get('limit') || '50', 10);
-    const jobs = getRecentJobs(limit);
+    const jobs = await getRecentJobs(limit);
     return NextResponse.json({ jobs });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

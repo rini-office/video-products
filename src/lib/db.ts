@@ -1,29 +1,26 @@
-import Database from 'better-sqlite3';
-import path from 'path';
+import { Pool } from '@neondatabase/serverless';
 
-const isVercel = !!process.env.VERCEL;
-const DB_PATH = isVercel
-  ? path.join('/tmp', 'pipeline.db')
-  : path.join(process.cwd(), 'data', 'pipeline.db');
+// Vercel edge/Node.js auto-detection — use WebSocket for Node, HTTP fetch for edge
+// In Next.js App Router with runtime='nodejs', Pool (WebSocket) is fine.
 
-let db: Database.Database | null = null;
+let pool: Pool | null = null;
 
-export function getDb(): Database.Database {
-  if (!db) {
-    const fs = require('fs');
-    const dir = path.dirname(DB_PATH);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+function getPool(): Pool {
+  if (!pool) {
+    const DATABASE_URL = process.env.DATABASE_URL;
+    if (!DATABASE_URL) {
+      throw new Error('DATABASE_URL environment variable is required. Get yours at https://neon.tech');
     }
-    db = new Database(DB_PATH);
-    db.pragma('journal_mode = WAL');
-    initializeSchema(db);
+    pool = new Pool({ connectionString: DATABASE_URL });
   }
-  return db;
+  return pool;
 }
 
-function initializeSchema(db: Database.Database): void {
-  db.exec(`
+// ── Schema initialization ─────────────────────────────────────────────────
+
+async function initializeSchema(): Promise<void> {
+  const p = getPool();
+  await p.query(`
     CREATE TABLE IF NOT EXISTS jobs (
       id TEXT PRIMARY KEY,
       source_file_name TEXT NOT NULL,
@@ -38,30 +35,33 @@ function initializeSchema(db: Database.Database): void {
       duration INTEGER DEFAULT 8,
       resolution TEXT DEFAULT '1080p',
       error TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
       completed_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS config (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS processed_files (
       file_id TEXT PRIMARY KEY,
-      processed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      processed_at TEXT NOT NULL
     );
   `);
 
-  // Migrate: add missing columns for older DBs
-  migrateSchema(db);
+  // Run migrations for existing databases
+  await migrateSchema(p);
 }
 
-function migrateSchema(db: Database.Database): void {
-  const existingCols = db.prepare("PRAGMA table_info('jobs')").all() as { name: string }[];
-  const colNames = new Set(existingCols.map((c) => c.name));
+async function migrateSchema(p: Pool): Promise<void> {
+  // Add missing columns for older DBs
+  const { rows: existingCols } = await p.query<{ column_name: string }>(
+    `SELECT column_name FROM information_schema.columns WHERE table_name = 'jobs'`
+  );
+  const colNames = new Set(existingCols.map((c) => c.column_name));
 
   const migrations: { col: string; def: string }[] = [
     { col: 'image_prompt', def: 'TEXT' },
@@ -71,19 +71,39 @@ function migrateSchema(db: Database.Database): void {
 
   for (const { col, def } of migrations) {
     if (!colNames.has(col)) {
-      db.exec(`ALTER TABLE jobs ADD COLUMN ${col} ${def}`);
+      await p.query(`ALTER TABLE jobs ADD COLUMN ${col} ${def}`);
     }
   }
 
   // Migrate old config key: drive_source_folder → drive_image_output_folder
-  const oldVal = db.prepare("SELECT value FROM config WHERE key = 'drive_source_folder'").get() as { value: string } | undefined;
-  if (oldVal?.value) {
-    const newExists = db.prepare("SELECT 1 FROM config WHERE key = 'drive_image_output_folder'").get();
-    if (!newExists) {
-      db.prepare("INSERT OR REPLACE INTO config (key, value, updated_at) VALUES ('drive_image_output_folder', ?, datetime('now'))").run(oldVal.value);
+  const { rows: oldRows } = await p.query<{ value: string }>(
+    `SELECT value FROM config WHERE key = 'drive_source_folder'`
+  );
+  if (oldRows.length > 0 && oldRows[0].value) {
+    const { rows: newRows } = await p.query(
+      `SELECT 1 FROM config WHERE key = 'drive_image_output_folder'`
+    );
+    if (newRows.length === 0) {
+      await p.query(
+        `INSERT INTO config (key, value, updated_at) VALUES ('drive_image_output_folder', $1, $2)
+         ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = $2`,
+        [oldRows[0].value, new Date().toISOString()]
+      );
     }
   }
 }
+
+// schemaInitPromise ensures schema is ready before any query
+let schemaInitPromise: Promise<void> | null = null;
+
+async function ensureSchema(): Promise<void> {
+  if (!schemaInitPromise) {
+    schemaInitPromise = initializeSchema();
+  }
+  await schemaInitPromise;
+}
+
+// ── Job type ──────────────────────────────────────────────────────────────
 
 export interface Job {
   id: string;
@@ -104,73 +124,118 @@ export interface Job {
   completed_at: string | null;
 }
 
-export function createJob(job: Omit<Job, 'created_at' | 'updated_at' | 'completed_at'>): Job {
-  const database = getDb();
-  const stmt = database.prepare(`
-    INSERT INTO jobs (id, source_file_name, source_file_id, status, kie_task_id, output_url, output_file_id, image_prompt, image_output_file_id, image_gen_task_id, duration, resolution, error)
-    VALUES (@id, @source_file_name, @source_file_id, @status, @kie_task_id, @output_url, @output_file_id, @image_prompt, @image_output_file_id, @image_gen_task_id, @duration, @resolution, @error)
-  `);
-  stmt.run(job);
-  return getJob(job.id)!;
+// ── Job CRUD ──────────────────────────────────────────────────────────────
+
+export async function createJob(job: Omit<Job, 'created_at' | 'updated_at' | 'completed_at'>): Promise<Job> {
+  await ensureSchema();
+  const now = new Date().toISOString();
+  const p = getPool();
+  await p.query(
+    `INSERT INTO jobs (id, source_file_name, source_file_id, status, kie_task_id, output_url, output_file_id, image_prompt, image_output_file_id, image_gen_task_id, duration, resolution, error, created_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+    [
+      job.id, job.source_file_name, job.source_file_id, job.status,
+      job.kie_task_id, job.output_url, job.output_file_id, job.image_prompt,
+      job.image_output_file_id, job.image_gen_task_id, job.duration,
+      job.resolution, job.error, now, now,
+    ]
+  );
+  return (await getJob(job.id))!;
 }
 
-export function getJob(id: string): Job | undefined {
-  const database = getDb();
-  return database.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as Job | undefined;
+export async function getJob(id: string): Promise<Job | undefined> {
+  await ensureSchema();
+  const p = getPool();
+  const { rows } = await p.query<Job>('SELECT * FROM jobs WHERE id = $1', [id]);
+  return rows[0];
 }
 
-export function updateJob(id: string, updates: Partial<Pick<Job, 'status' | 'source_file_id' | 'source_file_name' | 'kie_task_id' | 'output_url' | 'output_file_id' | 'image_prompt' | 'image_output_file_id' | 'image_gen_task_id' | 'error' | 'completed_at'>>): void {
-  const database = getDb();
-  const fields: string[] = [];
+export async function updateJob(
+  id: string,
+  updates: Partial<Pick<Job, 'status' | 'source_file_id' | 'source_file_name' | 'kie_task_id' | 'output_url' | 'output_file_id' | 'image_prompt' | 'image_output_file_id' | 'image_gen_task_id' | 'error' | 'completed_at'>>
+): Promise<void> {
+  await ensureSchema();
+  const p = getPool();
+  const setClauses: string[] = [];
   const values: unknown[] = [];
+  let paramIdx = 1;
 
   for (const [key, value] of Object.entries(updates)) {
-    fields.push(`${key} = ?`);
+    setClauses.push(`${key} = $${paramIdx}`);
     values.push(value);
+    paramIdx++;
   }
-  fields.push("updated_at = datetime('now')");
+  setClauses.push(`updated_at = $${paramIdx}`);
+  values.push(new Date().toISOString());
+  paramIdx++;
   values.push(id);
 
-  database.prepare(`UPDATE jobs SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  await p.query(`UPDATE jobs SET ${setClauses.join(', ')} WHERE id = $${paramIdx}`, values);
 }
 
-export function getUnprocessedJobs(limit = 50): Job[] {
-  const database = getDb();
-  return database.prepare('SELECT * FROM jobs WHERE status IN (?, ?) ORDER BY created_at ASC LIMIT ?')
-    .all('pending', 'queued', limit) as Job[];
+export async function getUnprocessedJobs(limit = 50): Promise<Job[]> {
+  await ensureSchema();
+  const p = getPool();
+  const { rows } = await p.query<Job>(
+    'SELECT * FROM jobs WHERE status IN ($1, $2) ORDER BY created_at ASC LIMIT $3',
+    ['pending', 'queued', limit]
+  );
+  return rows;
 }
 
-export function getRecentJobs(limit = 20): Job[] {
-  const database = getDb();
-  return database.prepare('SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?').all(limit) as Job[];
+export async function getRecentJobs(limit = 20): Promise<Job[]> {
+  await ensureSchema();
+  const p = getPool();
+  const { rows } = await p.query<Job>(
+    'SELECT * FROM jobs ORDER BY created_at DESC LIMIT $1',
+    [limit]
+  );
+  return rows;
 }
 
-export function getJobStats(): { total: number; completed: number; failed: number; processing_image: number; processing_video: number } {
-  const database = getDb();
-  const stats = database.prepare(`
-    SELECT
-      COUNT(*) as total,
-      SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-      SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
-      SUM(CASE WHEN status = 'processing_image' THEN 1 ELSE 0 END) as processing_image,
-      SUM(CASE WHEN status = 'processing_video' THEN 1 ELSE 0 END) as processing_video
-    FROM jobs
-  `).get() as { total: number; completed: number; failed: number; processing_image: number; processing_video: number };
-  return stats;
+export async function getJobStats(): Promise<{
+  total: number; completed: number; failed: number; processing_image: number; processing_video: number;
+}> {
+  await ensureSchema();
+  const p = getPool();
+  const { rows } = await p.query<{
+    total: string; completed: string; failed: string; processing_image: string; processing_video: string;
+  }>(
+    `SELECT
+       COUNT(*) as total,
+       COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) as completed,
+       COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
+       COALESCE(SUM(CASE WHEN status = 'processing_image' THEN 1 ELSE 0 END), 0) as processing_image,
+       COALESCE(SUM(CASE WHEN status = 'processing_video' THEN 1 ELSE 0 END), 0) as processing_video
+     FROM jobs`
+  );
+  const r = rows[0];
+  return {
+    total: parseInt(r.total),
+    completed: parseInt(r.completed),
+    failed: parseInt(r.failed),
+    processing_image: parseInt(r.processing_image),
+    processing_video: parseInt(r.processing_video),
+  };
 }
 
-export function isFileProcessed(fileId: string): boolean {
-  const database = getDb();
-  const row = database.prepare('SELECT 1 FROM processed_files WHERE file_id = ?').get(fileId);
-  return !!row;
+export async function isFileProcessed(fileId: string): Promise<boolean> {
+  await ensureSchema();
+  const p = getPool();
+  const { rows } = await p.query('SELECT 1 FROM processed_files WHERE file_id = $1', [fileId]);
+  return rows.length > 0;
 }
 
-export function markFileProcessed(fileId: string): void {
-  const database = getDb();
-  database.prepare('INSERT OR IGNORE INTO processed_files (file_id) VALUES (?)').run(fileId);
+export async function markFileProcessed(fileId: string): Promise<void> {
+  await ensureSchema();
+  const p = getPool();
+  await p.query(
+    'INSERT INTO processed_files (file_id, processed_at) VALUES ($1, $2) ON CONFLICT (file_id) DO NOTHING',
+    [fileId, new Date().toISOString()]
+  );
 }
 
-// Config helpers
+// ── Config helpers ────────────────────────────────────────────────────────
 
 const ENV_FALLBACKS: Record<string, string | undefined> = {
   kie_api_key: process.env.KIE_API_KEY,
@@ -178,23 +243,51 @@ const ENV_FALLBACKS: Record<string, string | undefined> = {
   google_client_secret: process.env.GOOGLE_CLIENT_SECRET,
 };
 
-export function getConfig(key: string): string | undefined {
-  const database = getDb();
-  const row = database.prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined;
-  return row?.value || ENV_FALLBACKS[key];
+export async function getConfig(key: string): Promise<string | undefined> {
+  await ensureSchema();
+  const p = getPool();
+  const { rows } = await p.query<{ value: string }>(
+    'SELECT value FROM config WHERE key = $1', [key]
+  );
+  return rows[0]?.value || ENV_FALLBACKS[key];
 }
 
-export function setConfig(key: string, value: string): void {
-  const database = getDb();
-  database.prepare('INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, datetime(\'now\'))').run(key, value);
+export async function setConfig(key: string, value: string): Promise<void> {
+  await ensureSchema();
+  const p = getPool();
+  await p.query(
+    `INSERT INTO config (key, value, updated_at) VALUES ($1, $2, $3)
+     ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = $3`,
+    [key, value, new Date().toISOString()]
+  );
 }
 
-export function getAllConfig(): Record<string, string> {
-  const database = getDb();
-  const rows = database.prepare('SELECT key, value FROM config').all() as { key: string; value: string }[];
+export async function getAllConfig(): Promise<Record<string, string>> {
+  await ensureSchema();
+  const p = getPool();
+  const { rows } = await p.query<{ key: string; value: string }>(
+    'SELECT key, value FROM config'
+  );
   const config: Record<string, string> = {};
   for (const row of rows) {
     config[row.key] = row.value;
   }
   return config;
+}
+
+// ── Raw pool access (for complex queries in routes) ───────────────────────
+
+export async function getDb(): Promise<Pool> {
+  await ensureSchema();
+  return getPool();
+}
+
+// ── Cleanup for graceful shutdown ─────────────────────────────────────────
+
+export async function closeDb(): Promise<void> {
+  if (pool) {
+    await pool.end();
+    pool = null;
+    schemaInitPromise = null;
+  }
 }

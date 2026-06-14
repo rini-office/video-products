@@ -6,8 +6,8 @@ export const runtime = 'nodejs';
 
 export async function GET() {
   try {
-    const config = getAllConfig();
-    const driveReady = isAuthenticated();
+    const config = await getAllConfig();
+    const driveReady = await isAuthenticated();
 
     let folders: { id: string; name: string }[] = [];
     if (driveReady) {
@@ -76,21 +76,20 @@ export async function POST(request: NextRequest) {
 
     for (const field of fields) {
       if (body[field] !== undefined && body[field] !== '' && !body[field].includes('••••')) {
-        setConfig(field, body[field]);
+        await setConfig(field, body[field]);
       }
     }
 
-    // Handle scheduler control
+    // Handle scheduler control (local dev / VPS only)
     if (body.action === 'start_scheduler') {
-      setConfig('scheduler_running', 'true');
-      // Dynamic import to avoid issues during build
+      await setConfig('scheduler_running', 'true');
       const { startScheduler } = await import('@/lib/scheduler');
-      startScheduler();
+      await startScheduler();
       return NextResponse.json({ success: true, schedulerStarted: true });
     }
 
     if (body.action === 'stop_scheduler') {
-      setConfig('scheduler_running', 'false');
+      await setConfig('scheduler_running', 'false');
       const { stopScheduler } = await import('@/lib/scheduler');
       stopScheduler();
       return NextResponse.json({ success: true, schedulerStopped: true });

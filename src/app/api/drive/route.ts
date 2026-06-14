@@ -5,8 +5,8 @@ export const runtime = 'nodejs';
 
 export async function GET() {
   try {
-    if (!isAuthenticated()) {
-      const url = getAuthUrl();
+    if (!(await isAuthenticated())) {
+      const url = await getAuthUrl();
       return NextResponse.json({ authUrl: url, authenticated: false });
     }
     return NextResponse.json({ authenticated: true });

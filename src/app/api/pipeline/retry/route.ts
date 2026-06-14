@@ -3,6 +3,9 @@ import { retryJobVideo } from '@/lib/pipeline';
 
 export const runtime = 'nodejs';
 
+// NOTE: retryJobVideo does long polling (up to 7.5 min) — only works on local dev / VPS.
+// On Vercel, retryJobVideo returns an error immediately.
+
 export async function POST(request: NextRequest) {
   try {
     const { jobId } = await request.json();

@@ -4,8 +4,6 @@ import { checkTaskStatus } from '@/lib/kie';
 
 export const runtime = 'nodejs';
 
-// GET: check stuck job status via KIE API
-// POST: reset processed file or stuck job
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -26,14 +24,14 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const db = getDb();
+    const db = await getDb();
 
     if (body.action === 'reset_processed') {
       const fileId = body.fileId;
       if (!fileId) {
         return NextResponse.json({ error: 'fileId required' }, { status: 400 });
       }
-      db.prepare('DELETE FROM processed_files WHERE file_id = ?').run(fileId);
+      await db.query('DELETE FROM processed_files WHERE file_id = $1', [fileId]);
       return NextResponse.json({ success: true, message: `File ${fileId} reset` });
     }
 
@@ -42,13 +40,13 @@ export async function POST(request: NextRequest) {
       if (!jobId) {
         return NextResponse.json({ error: 'jobId required' }, { status: 400 });
       }
-      updateJob(jobId, { status: 'pending', error: null, kie_task_id: null });
+      await updateJob(jobId, { status: 'pending', error: null, kie_task_id: null });
       return NextResponse.json({ success: true, message: `Job ${jobId} reset to pending` });
     }
 
     if (body.action === 'clear_all') {
-      db.exec('DELETE FROM jobs');
-      db.exec('DELETE FROM processed_files');
+      await db.query('DELETE FROM jobs');
+      await db.query('DELETE FROM processed_files');
       return NextResponse.json({ success: true, message: 'All jobs and processed files cleared' });
     }
 

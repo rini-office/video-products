@@ -33,8 +33,8 @@ interface KieApiResponse {
   };
 }
 
-function getApiKey(): string {
-  const key = getConfig('kie_api_key');
+async function getApiKey(): Promise<string> {
+  const key = await getConfig('kie_api_key');
   if (!key) {
     throw new Error('KIE API key not configured. Please set kie_api_key in settings.');
   }
@@ -45,7 +45,7 @@ async function kieGet(endpoint: string): Promise<KieApiResponse> {
   const response = await fetch(`${KIE_API_BASE}${endpoint}`, {
     method: 'GET',
     headers: {
-      'Authorization': `Bearer ${getApiKey()}`,
+      'Authorization': `Bearer ${await getApiKey()}`,
       'Content-Type': 'application/json',
     },
   });
@@ -62,7 +62,7 @@ async function kiePost(endpoint: string, body: Record<string, unknown>): Promise
   const response = await fetch(`${KIE_API_BASE}${endpoint}`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${getApiKey()}`,
+      'Authorization': `Bearer ${await getApiKey()}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
@@ -204,15 +204,15 @@ export interface ImageToImageParams {
   callBackUrl?: string;
 }
 
-function buildImageToImageRequestBody(params: ImageToImageParams): Record<string, unknown> {
-  const model = params.model || getConfig('kie_image_model') || 'nano-banana-2';
+async function buildImageToImageRequestBody(params: ImageToImageParams): Promise<Record<string, unknown>> {
+  const model = params.model || await getConfig('kie_image_model') || 'nano-banana-2';
 
   const input: Record<string, unknown> = {
-    prompt: params.prompt || getConfig('default_image_to_image_prompt') || 'Enhance this image, improve quality, add cinematic lighting and detail',
+    prompt: params.prompt || await getConfig('default_image_to_image_prompt') || 'Enhance this image, improve quality, add cinematic lighting and detail',
     image_input: [params.imageUrl],
-    aspect_ratio: params.aspectRatio || getConfig('image_aspect_ratio') || 'auto',
-    resolution: params.resolution || getConfig('image_resolution') || '1K',
-    output_format: params.outputFormat || getConfig('image_output_format') || 'jpg',
+    aspect_ratio: params.aspectRatio || await getConfig('image_aspect_ratio') || 'auto',
+    resolution: params.resolution || await getConfig('image_resolution') || '1K',
+    output_format: params.outputFormat || await getConfig('image_output_format') || 'jpg',
   };
 
   const body: Record<string, unknown> = { model, input };
@@ -225,7 +225,7 @@ function buildImageToImageRequestBody(params: ImageToImageParams): Record<string
 }
 
 export async function enhanceImage(params: ImageToImageParams): Promise<string> {
-  const body = buildImageToImageRequestBody(params);
+  const body = await buildImageToImageRequestBody(params);
 
   const result = await kiePost('/api/v1/jobs/createTask', body);
 
@@ -246,8 +246,8 @@ export interface ImageGenerationParams {
   callBackUrl?: string;
 }
 
-function buildImageRequestBody(params: ImageGenerationParams): Record<string, unknown> {
-  const model = params.model || getConfig('kie_image_model') || 'grok-imagine/text-to-image';
+async function buildImageRequestBody(params: ImageGenerationParams): Promise<Record<string, unknown>> {
+  const model = params.model || await getConfig('kie_image_model') || 'grok-imagine/text-to-image';
   const count = params.count || 1;
   const resolution = params.resolution || '1024x1024';
 
@@ -267,7 +267,7 @@ function buildImageRequestBody(params: ImageGenerationParams): Record<string, un
 }
 
 export async function generateImage(params: ImageGenerationParams): Promise<string> {
-  const body = buildImageRequestBody(params);
+  const body = await buildImageRequestBody(params);
 
   const result = await kiePost('/api/v1/jobs/createTask', body);
 
@@ -632,7 +632,7 @@ async function downloadMedia(url: string): Promise<Buffer> {
   const proxyRes = await fetch(`${KIE_API_BASE}/api/v1/common/download-url`, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${getApiKey()}`,
+      'Authorization': `Bearer ${await getApiKey()}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ url }),

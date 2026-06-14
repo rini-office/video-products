@@ -11,7 +11,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'jobId is required' }, { status: 400 });
     }
 
-    const job = getJob(jobId);
+    const job = await getJob(jobId);
     if (!job) {
       return NextResponse.json({ error: 'Job not found' }, { status: 404 });
     }
@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Job is not stuck in processing state' }, { status: 422 });
     }
 
-    updateJob(jobId, {
+    await updateJob(jobId, {
       status: 'failed',
       error: 'Manually marked as failed (stuck)',
       completed_at: new Date().toISOString(),

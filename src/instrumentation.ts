@@ -3,9 +3,9 @@ export async function register() {
     const { startScheduler } = await import('@/lib/scheduler');
     const { getConfig } = await import('@/lib/db');
 
-    const wasRunning = getConfig('scheduler_running');
+    const wasRunning = await getConfig('scheduler_running');
     if (wasRunning !== 'false') {
-      startScheduler();
+      await startScheduler();
     }
   }
 }

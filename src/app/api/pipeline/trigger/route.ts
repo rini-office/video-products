@@ -6,10 +6,10 @@ export const runtime = 'nodejs';
 
 export async function POST(request: NextRequest) {
   try {
-    const pipelineMode = getConfig('pipeline_mode') || 'image-to-image';
-    const inputFolderId = getConfig('drive_input_folder') || getConfig('drive_source_folder');
-    const imageOutputFolderId = getConfig('drive_image_output_folder') || getConfig('drive_source_folder');
-    const videoOutputFolderId = getConfig('drive_dest_folder');
+    const pipelineMode = await getConfig('pipeline_mode') || 'image-to-image';
+    const inputFolderId = await getConfig('drive_input_folder') || await getConfig('drive_source_folder');
+    const imageOutputFolderId = await getConfig('drive_image_output_folder') || await getConfig('drive_source_folder');
+    const videoOutputFolderId = await getConfig('drive_dest_folder');
 
     if (pipelineMode === 'image-to-image') {
       if (!inputFolderId || !imageOutputFolderId || !videoOutputFolderId) {

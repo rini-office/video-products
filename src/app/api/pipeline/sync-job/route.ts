@@ -3,6 +3,10 @@ import { syncJob } from '@/lib/pipeline';
 
 export const runtime = 'nodejs';
 
+// NOTE: syncJob polls KIE tasks (up to 10 min for image, 7.5 min for video)
+// Only use for local dev or VPS. Not suitable for Vercel serverless.
+// syncJob returns an error immediately on Vercel.
+
 export async function POST(request: NextRequest) {
   try {
     const { jobId } = await request.json();
@@ -11,8 +15,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'jobId is required' }, { status: 400 });
     }
 
-    // WARNING: syncJob polls KIE tasks (up to 10 min for image, 7.5 min for video)
-    // Only use for local dev or VPS. Not suitable for Vercel serverless.
     const result = await syncJob(jobId);
 
     return NextResponse.json(result);

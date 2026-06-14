@@ -6,10 +6,10 @@ const SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
 ];
 
-function getOAuth2Client() {
-  const clientId = getConfig('google_client_id');
-  const clientSecret = getConfig('google_client_secret');
-  const refreshToken = getConfig('google_refresh_token');
+async function getOAuth2Client() {
+  const clientId = await getConfig('google_client_id');
+  const clientSecret = await getConfig('google_client_secret');
+  const refreshToken = await getConfig('google_refresh_token');
 
   if (!clientId || !clientSecret) {
     throw new Error('Google OAuth credentials not configured. Please set google_client_id and google_client_secret.');
@@ -25,12 +25,13 @@ function getOAuth2Client() {
 
   if (refreshToken) {
     oauth2Client.setCredentials({ refresh_token: refreshToken });
+    // Event handler for token refresh — these setConfig calls are fire-and-forget
     oauth2Client.on('tokens', (tokens) => {
       if (tokens.refresh_token) {
-        setConfig('google_refresh_token', tokens.refresh_token);
+        setConfig('google_refresh_token', tokens.refresh_token).catch(() => {});
       }
       if (tokens.access_token) {
-        setConfig('google_access_token', tokens.access_token);
+        setConfig('google_access_token', tokens.access_token).catch(() => {});
       }
     });
   }
@@ -38,8 +39,8 @@ function getOAuth2Client() {
   return oauth2Client;
 }
 
-export function getAuthUrl(): string {
-  const oauth2Client = getOAuth2Client();
+export async function getAuthUrl(): Promise<string> {
+  const oauth2Client = await getOAuth2Client();
   return oauth2Client.generateAuthUrl({
     access_type: 'offline',
     scope: SCOPES,
@@ -48,22 +49,22 @@ export function getAuthUrl(): string {
 }
 
 export async function handleAuthCallback(code: string): Promise<void> {
-  const oauth2Client = getOAuth2Client();
+  const oauth2Client = await getOAuth2Client();
   const { tokens } = await oauth2Client.getToken(code);
   if (tokens.refresh_token) {
-    setConfig('google_refresh_token', tokens.refresh_token);
+    await setConfig('google_refresh_token', tokens.refresh_token);
   }
   if (tokens.access_token) {
-    setConfig('google_access_token', tokens.access_token);
+    await setConfig('google_access_token', tokens.access_token);
   }
 }
 
-export function isAuthenticated(): boolean {
-  return !!getConfig('google_refresh_token');
+export async function isAuthenticated(): Promise<boolean> {
+  return !!(await getConfig('google_refresh_token'));
 }
 
 export async function listImagesInFolder(folderId: string): Promise<{ id: string; name: string; mimeType: string; webContentLink?: string }[]> {
-  const auth = getOAuth2Client();
+  const auth = await getOAuth2Client();
   const drive = google.drive({ version: 'v3', auth });
 
   const response = await drive.files.list({
@@ -79,7 +80,7 @@ export async function listImagesInFolder(folderId: string): Promise<{ id: string
 }
 
 export async function listFolders(): Promise<{ id: string; name: string }[]> {
-  const auth = getOAuth2Client();
+  const auth = await getOAuth2Client();
   const drive = google.drive({ version: 'v3', auth });
 
   const response = await drive.files.list({
@@ -94,7 +95,7 @@ export async function listFolders(): Promise<{ id: string; name: string }[]> {
 }
 
 export async function downloadFile(fileId: string): Promise<{ buffer: Buffer; name: string; mimeType: string }> {
-  const auth = getOAuth2Client();
+  const auth = await getOAuth2Client();
   const drive = google.drive({ version: 'v3', auth });
 
   const meta = await drive.files.get({ fileId, fields: 'name,mimeType' });
@@ -113,7 +114,7 @@ export async function uploadFile(
   buffer: Buffer,
   mimeType: string
 ): Promise<string> {
-  const auth = getOAuth2Client();
+  const auth = await getOAuth2Client();
   const drive = google.drive({ version: 'v3', auth });
 
   const response = await drive.files.create({
@@ -133,7 +134,7 @@ export async function uploadFile(
 }
 
 export async function getFileUrl(fileId: string): Promise<string> {
-  const auth = getOAuth2Client();
+  const auth = await getOAuth2Client();
   const drive = google.drive({ version: 'v3', auth });
 
   await drive.permissions.create({
@@ -149,11 +150,9 @@ export async function getFileUrl(fileId: string): Promise<string> {
     fields: 'webContentLink',
   });
 
-  // webContentLink is the direct download URL — what KIE/etc need for raw file access
   if (meta.data.webContentLink) {
     return meta.data.webContentLink;
   }
 
-  // Fallback: standard Google Drive direct download URL
   return `https://drive.google.com/uc?export=download&id=${fileId}`;
 }

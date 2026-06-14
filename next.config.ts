@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["better-sqlite3"],
+  // Neon uses WebSocket (not native addon), no serverExternalPackages needed
 };
 
 export default nextConfig;
