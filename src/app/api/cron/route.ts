@@ -1,39 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { executePipeline } from '@/lib/scheduler';
 import { getConfig } from '@/lib/db';
-import { shouldRunCron } from '@/lib/cron';
+import { shouldRunCron, getNextCronTime } from '@/lib/cron';
 
 export const runtime = 'nodejs';
 
-// Vercel Cron Job endpoint — called every 5 min, checks schedule_cron from DB
-// to decide whether to actually run the pipeline.
+// Vercel Cron Job endpoint — called every ~5 min by cron-job.org, checks schedule_cron from DB
 
 export async function GET(request: NextRequest) {
   try {
-    // Verify CRON_SECRET to prevent unauthorized access
+    // Verify CRON_SECRET
     const authHeader = request.headers.get('Authorization');
     const cronSecret = process.env.CRON_SECRET;
-
     if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const schedulerRunning = await getConfig('scheduler_running');
     if (schedulerRunning === 'false') {
-      return NextResponse.json({ skipped: true, reason: 'scheduler_running is false' });
+      return NextResponse.json({ skipped: true, reason: 'scheduler stopped' });
     }
 
-    // Dynamic schedule: check if it's time to run based on configured cron expression
     const cronExpression = await getConfig('schedule_cron') || '0 8 * * *';
+    const timezone = await getConfig('schedule_timezone') || 'Asia/Jakarta';
     const lastRun = await getConfig('last_run');
 
-    if (!shouldRunCron(cronExpression, lastRun)) {
-      const nextRun = await import('@/lib/cron').then(m =>
-        m.getNextCronTime(cronExpression)
-      );
+    if (!shouldRunCron(cronExpression, lastRun, new Date(), timezone)) {
+      // Calculate next run for info
+      const nextRun = getNextCronTime(cronExpression, new Date(), timezone);
       return NextResponse.json({
         skipped: true,
-        reason: 'Not yet time for next run',
+        reason: 'not yet',
         nextRun: nextRun.toISOString(),
       });
     }

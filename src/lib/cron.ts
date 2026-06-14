@@ -43,61 +43,192 @@ function parseField(field: string, min: number, max: number): number[] {
   return Array.from(values).sort((a, b) => a - b);
 }
 
-function dayOfMonth(year: number, month: number): number {
-  return new Date(year, month + 1, 0).getDate();
+function parseCron(cronExpression: string): CronFields {
+  const parts = cronExpression.trim().split(/\s+/);
+  if (parts.length !== 5) {
+    throw new Error(`Invalid cron expression: "${cronExpression}". Expected 5 fields.`);
+  }
+  return {
+    minute: parseField(parts[0], 0, 59),
+    hour: parseField(parts[1], 0, 23),
+    dayOfMonth: parseField(parts[2], 1, 31),
+    month: parseField(parts[3], 1, 12),
+    dayOfWeek: parseField(parts[4], 0, 6),
+  };
 }
 
+/**
+ * Get date components in a specific timezone using Intl.DateTimeFormat.
+ */
+function getTimeComponents(date: Date, timezone: string): {
+  year: number; month: number; day: number; hour: number; minute: number; dayOfWeek: number;
+} {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    weekday: 'short',
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(date);
+  const map: Record<string, number> = {};
+
+  for (const part of parts) {
+    if (part.type === 'year' || part.type === 'month' || part.type === 'day' ||
+        part.type === 'hour' || part.type === 'minute') {
+      map[part.type] = parseInt(part.value, 10);
+    }
+    if (part.type === 'weekday') {
+      const weekdays: Record<string, number> = {
+        'Sun': 0, 'Mon': 1, 'Tue': 2, 'Wed': 3, 'Thu': 4, 'Fri': 5, 'Sat': 6,
+      };
+      map['dayOfWeek'] = weekdays[part.value] ?? 0;
+    }
+  }
+
+  // Intl gives month 01-12, we want 1-12
+  return {
+    year: map.year,
+    month: map.month,
+    day: map.day,
+    hour: map.hour,
+    minute: map.minute,
+    dayOfWeek: map.dayOfWeek,
+  };
+}
+
+/**
+ * Check if the current time (in the given timezone) matches a cron expression.
+ */
+function matchesCronNow(cronExpression: string, now: Date, timezone: string): boolean {
+  const parts = cronExpression.trim().split(/\s+/);
+  const fields = parseCron(cronExpression);
+  const t = getTimeComponents(now, timezone);
+
+  if (!fields.minute.includes(t.minute)) return false;
+  if (!fields.hour.includes(t.hour)) return false;
+
+  // dayOfMonth — only check if the field is not wildcard
+  if (parts[2] !== '*') {
+    if (!fields.dayOfMonth.includes(t.day)) return false;
+  }
+
+  // month — only check if not wildcard
+  if (parts[3] !== '*') {
+    if (!fields.month.includes(t.month)) return false;
+  }
+
+  // dayOfWeek — only check if not wildcard
+  if (parts[4] !== '*') {
+    if (!fields.dayOfWeek.includes(t.dayOfWeek)) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Check if it's time to run based on the cron expression, timezone, and last run time.
+ * Called by the Vercel Cron endpoint (runs every ~5 min) to decide whether to execute.
+ */
+export function shouldRunCron(
+  cronExpression: string,
+  lastRunIso: string | undefined,
+  now: Date = new Date(),
+  timezone: string = 'UTC'
+): boolean {
+  if (!lastRunIso) return true;
+
+  if (!matchesCronNow(cronExpression, now, timezone)) return false;
+
+  // Prevent re-execution within the same slot: if last run was < 4 min ago, skip
+  const lastRun = new Date(lastRunIso).getTime();
+  return (now.getTime() - lastRun) > 4 * 60 * 1000;
+}
+
+/**
+ * Calculate the next cron run time in the given timezone (for countdown display).
+ */
 export function getNextCronTime(
   cronExpression: string,
   from: Date = new Date(),
   timezone: string = 'UTC'
 ): Date {
-  const parts = cronExpression.trim().split(/\s+/);
-  if (parts.length !== 5) {
-    throw new Error(`Invalid cron expression: "${cronExpression}". Expected 5 fields, got ${parts.length}.`);
-  }
+  const fields = parseCron(cronExpression);
+  const t = getTimeComponents(from, timezone);
 
-  const fields: CronFields = {
-    minute: parseField(parts[0], 0, 59),
-    hour: parseField(parts[1], 0, 23),
-    dayOfMonth: parseField(parts[2], 1, 31),
-    month: parseField(parts[3], 1, 12),
-    dayOfWeek: parseField(parts[4], 0, 6), // 0=Sunday
-  };
+  // Start from the current minute + 1
+  let minute = t.minute + 1;
+  let hour = t.hour;
+  let day = t.day;
+  let month = t.month;
+  let year = t.year;
 
-  // Start from the next minute
-  const start = new Date(from);
-  start.setMilliseconds(0);
-  start.setSeconds(0);
-  start.setMinutes(start.getMinutes() + 1);
-
-  const year = start.getFullYear();
+  // Search forward up to 4 years
   const maxYear = year + 4;
 
   for (let y = year; y <= maxYear; y++) {
-    for (const month of fields.month) {
-      const maxDay = dayOfMonth(y, month - 1);
+    const mStart = y === year ? month : 1;
+    for (let m = mStart; m <= 12; m++) {
+      const daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
 
-      for (const day of fields.dayOfMonth) {
-        if (day > maxDay) continue;
+      const dStart = (y === year && m === month) ? day : 1;
+      for (let d = dStart; d <= daysInMonth; d++) {
+        // Check dayOfMonth
+        if (!fields.dayOfMonth.includes(d)) continue;
 
-        const date = new Date(y, month - 1, day);
+        // Check month
+        if (!fields.month.includes(m)) continue;
 
-        // Check dayOfWeek (0=Sunday) — match if dayOfWeek field is not just wildcard
-        if (parts[4] !== '*') {
-          if (!fields.dayOfWeek.includes(date.getDay())) continue;
-        }
+        // Check dayOfWeek — compute via UTC date since we only care about the weekday number
+        const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+        if (!fields.dayOfWeek.includes(dow)) continue;
 
-        for (const hour of fields.hour) {
-          for (const minute of fields.minute) {
-            const candidate = new Date(y, month - 1, day, hour, minute, 0, 0);
+        const hStart = (y === year && m === month && d === day) ? hour : 0;
+        for (let h = hStart; h <= 23; h++) {
+          if (!fields.hour.includes(h)) continue;
 
-            if (candidate > start) {
-              return candidate;
+          const minStart = (y === year && m === month && d === day && h === hour) ? minute : 0;
+          for (let min = minStart; min <= 59; min++) {
+            if (!fields.minute.includes(min)) continue;
+
+            // Found! Now we need to construct the date in the target timezone
+            // We have year, month, day, hour, minute in the target timezone
+            // We need to figure out the UTC equivalent
+            const localDateStr = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}T${String(h).padStart(2,'0')}:${String(min).padStart(2,'0')}:00`;
+            
+            // Use a trick: parse the date string, then figure out the offset
+            // Intl.DateTimeFormat can give us the UTC equivalent
+            const utcMs = Date.parse(localDateStr);
+            if (!isNaN(utcMs)) {
+              // Date.parse assumes local timezone of the runtime (UTC on Vercel)
+              // We need to adjust: the localDateStr represents time in the TARGET timezone
+              // So we need to shift by the timezone offset
+              
+              // Calculate the offset between target timezone and UTC at this moment
+              const jan1 = new Date(Date.UTC(y, 0, 1));
+              const july1 = new Date(Date.UTC(y, 6, 1));
+              const jan1Target = getTimeComponents(jan1, timezone);
+              const july1Target = getTimeComponents(july1, timezone);
+              
+              // Get approximate offset
+              const jan1Utc = new Date(Date.UTC(y, 0, 1, jan1Target.hour, jan1Target.minute));
+              const offsetMs = jan1.getTime() - jan1Utc.getTime();
+              
+              const candidate = new Date(utcMs + offsetMs);
+              if (candidate > from) {
+                return candidate;
+              }
             }
           }
         }
+        // Reset hour for next day
+        hour = 0;
       }
+      minute = 0;
     }
   }
 
@@ -126,72 +257,4 @@ export function describeCron(cronExpression: string): string {
   }
 
   return cronExpression;
-}
-
-/**
- * Check if it's time to run based on the cron expression and last run time.
- * Called by the Vercel Cron endpoint (runs every ~5 min) to decide whether to execute.
- */
-export function shouldRunCron(
-  cronExpression: string,
-  lastRunIso: string | undefined,
-  now: Date = new Date()
-): boolean {
-  if (!lastRunIso) return true; // never run before
-
-  const lastRun = new Date(lastRunIso);
-  // Find the most recent cron-matched time on or before now
-  const expectedRun = getMostRecentCronTime(cronExpression, now);
-
-  return expectedRun > lastRun;
-}
-
-/**
- * Find the most recent cron-matched time on or before the given time.
- */
-function getMostRecentCronTime(cronExpression: string, before: Date): Date {
-  const parts = cronExpression.trim().split(/\s+/);
-  if (parts.length !== 5) throw new Error(`Invalid cron: ${cronExpression}`);
-
-  const fields: CronFields = {
-    minute: parseField(parts[0], 0, 59),
-    hour: parseField(parts[1], 0, 23),
-    dayOfMonth: parseField(parts[2], 1, 31),
-    month: parseField(parts[3], 1, 12),
-    dayOfWeek: parseField(parts[4], 0, 6),
-  };
-
-  // Search backward from before, up to 4 years
-  const start = new Date(before);
-  const minYear = before.getFullYear() - 4;
-
-  for (let y = start.getFullYear(); y >= minYear; y--) {
-    const months = [...fields.month].reverse();
-    for (const month of months) {
-      const maxDay = dayOfMonth(y, month - 1);
-      const days = fields.dayOfMonth.filter(d => d <= maxDay).reverse();
-
-      for (const day of days) {
-        const date = new Date(y, month - 1, day);
-
-        if (parts[4] !== '*') {
-          if (!fields.dayOfWeek.includes(date.getDay())) continue;
-        }
-
-        const hours = [...fields.hour].reverse();
-        for (const hour of hours) {
-          const minutes = [...fields.minute].reverse();
-          for (const minute of minutes) {
-            const candidate = new Date(y, month - 1, day, hour, minute, 0, 0);
-
-            if (candidate <= start) {
-              return candidate;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  return new Date(0); // epoch — will trigger run if no match found
 }
