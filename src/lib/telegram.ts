@@ -11,7 +11,6 @@ import { getConfig } from './db';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB Telegram bot limit
-const UPLOAD_TIMEOUT_MS = 120_000; // 120 seconds — 50 MB needs ~100s on 4 Mbps uplink
 
 interface TelegramResult {
    ok: boolean;
@@ -48,24 +47,17 @@ async function sendToTelegram(
    formData.append('chat_id', chatId);
 
    const fieldName = method === 'sendPhoto' ? 'photo' : 'video';
-   // Use File (standard Web API). Buffer is backed by ArrayBuffer at runtime;
-   // cast needed because @types/node declares Buffer<ArrayBufferLike>
-   // while the DOM BlobPart expects ArrayBufferView<ArrayBuffer>.
-   formData.append(fieldName, new File([buffer as BlobPart], fileName));
+   // Pass Buffer directly — undici (Node.js fetch) supports this at runtime.
+   // The `as unknown as` cast avoids TS DOM-type mismatch (BlobPart vs Buffer).
+   (formData as unknown as Record<string, (name: string, value: unknown, filename?: string) => void>)
+      .append(fieldName, buffer, fileName);
 
    if (caption) {
       formData.append('caption', caption);
    }
 
-   const controller = new AbortController();
-   const timeout = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
-
    try {
-      const response = await fetch(url, {
-         method: 'POST',
-         body: formData,
-         signal: controller.signal,
-      });
+      const response = await fetch(url, { method: 'POST', body: formData });
       const result: TelegramResult = await response.json();
 
       if (!result.ok) {
@@ -79,8 +71,6 @@ async function sendToTelegram(
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[Telegram] ${method} network error for ${fileName}:`, msg);
       return false;
-   } finally {
-      clearTimeout(timeout);
    }
 }
 
