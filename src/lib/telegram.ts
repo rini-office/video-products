@@ -11,7 +11,7 @@ import { getConfig } from './db';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB Telegram bot limit
-const UPLOAD_TIMEOUT_MS = 60_000; // 60 seconds
+const UPLOAD_TIMEOUT_MS = 120_000; // 120 seconds — 50 MB needs ~100s on 4 Mbps uplink
 
 interface TelegramResult {
    ok: boolean;
