@@ -4,7 +4,7 @@ import { downloadVideo, downloadImage, verifyWebhookSignature } from '@/lib/kie'
 import { uploadFile, getFileUrl } from '@/lib/drive';
 import { getConfig, getDb } from '@/lib/db';
 import { createImageToVideoTask } from '@/lib/kie';
-import { sendImageToTelegram, sendVideoToTelegram } from '@/lib/telegram';
+import { sendImageToTelegram, sendVideoToTelegram, sendTextToImageChat, sendTextToVideoChat } from '@/lib/telegram';
 
 export const runtime = 'nodejs';
 
@@ -123,9 +123,15 @@ async function handleImageCompletion(
     // Send to Telegram image bot (awaited — Vercel serverless kills fire-and-forget promises on response)
     try {
       const sent = await sendImageToTelegram(imageBuffer, job.source_file_name, `Enhanced: ${job.source_file_name}`);
-      if (!sent) console.warn(`[Webhook] Telegram image send failed for ${job.source_file_name}`);
+      if (!sent) {
+        console.warn(`[Webhook] Telegram image send failed for ${job.source_file_name}, sending Drive link instead`);
+        const driveLink = `https://drive.google.com/file/d/${uploadedImageId}/view`;
+        await sendTextToImageChat(`Enhanced: ${job.source_file_name}\nGagal kirim gambar, ini link Drive:\n${driveLink}`).catch(() => {});
+      }
     } catch (err) {
       console.error(`[Webhook] Telegram image send error:`, err);
+      const driveLink = `https://drive.google.com/file/d/${uploadedImageId}/view`;
+      await sendTextToImageChat(`Enhanced: ${job.source_file_name}\nError: ${err instanceof Error ? err.message : String(err)}\nDrive: ${driveLink}`).catch(() => {});
     }
 
     await updateJob(job.id, { image_output_file_id: uploadedImageId, source_file_id: uploadedImageId });
@@ -213,9 +219,15 @@ async function finalizeVideo(
       // Send to Telegram video bot (awaited — Vercel serverless kills fire-and-forget promises on response)
       try {
         const sent = await sendVideoToTelegram(videoBuffer, videoName, `Video: ${videoName}`);
-        if (!sent) console.warn(`[Webhook] Telegram video send failed for ${videoName}`);
+        if (!sent) {
+          console.warn(`[Webhook] Telegram video send failed for ${videoName}, sending Drive link instead`);
+          const driveLink = `https://drive.google.com/file/d/${uploadedFileId}/view`;
+          await sendTextToVideoChat(`Video: ${videoName}\nGagal kirim video, ini link Drive:\n${driveLink}`).catch(() => {});
+        }
       } catch (err) {
         console.error(`[Webhook] Telegram video send error:`, err);
+        const driveLink = `https://drive.google.com/file/d/${uploadedFileId}/view`;
+        await sendTextToVideoChat(`Video: ${videoName}\nError: ${err instanceof Error ? err.message : String(err)}\nDrive: ${driveLink}`).catch(() => {});
       }
       await updateJob(job.id, {
         output_file_id: uploadedFileId,

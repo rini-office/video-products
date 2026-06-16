@@ -12,7 +12,7 @@ import {
   enhanceImage,
 } from './kie';
 import { createJob, updateJob, getJob, isFileProcessed, markFileProcessed, getConfig } from './db';
-import { sendImageToTelegram, sendVideoToTelegram } from './telegram';
+import { sendImageToTelegram, sendVideoToTelegram, sendTextToImageChat, sendTextToVideoChat } from './telegram';
 
 const isVercel = !!process.env.VERCEL;
 
@@ -331,9 +331,15 @@ export async function retryJobVideo(jobId: string): Promise<{ success: boolean; 
     // Send to Telegram video bot
     try {
       const sent = await sendVideoToTelegram(videoBuffer, videoName, `Video: ${videoName}`);
-      if (!sent) console.warn(`[Retry] Telegram video send failed for ${videoName}`);
+      if (!sent) {
+        console.warn(`[Retry] Telegram video send failed for ${videoName}, sending Drive link instead`);
+        const driveLink = `https://drive.google.com/file/d/${uploadedVideoId}/view`;
+        await sendTextToVideoChat(`Video: ${videoName}\nGagal kirim video, ini link Drive:\n${driveLink}`).catch(() => {});
+      }
     } catch (err) {
       console.error(`[Retry] Telegram video send error:`, err);
+      const driveLink = `https://drive.google.com/file/d/${uploadedVideoId}/view`;
+      await sendTextToVideoChat(`Video: ${videoName}\nError: ${err instanceof Error ? err.message : String(err)}\nDrive: ${driveLink}`).catch(() => {});
     }
 
     await updateJob(jobId, {
@@ -394,9 +400,15 @@ export async function syncJob(jobId: string): Promise<{ success: boolean; status
       // Send to Telegram image bot
       try {
         const sent = await sendImageToTelegram(imageBuffer, job.source_file_name, `Enhanced: ${job.source_file_name}`);
-        if (!sent) console.warn(`[Sync] Telegram image send failed for ${job.source_file_name}`);
+        if (!sent) {
+          console.warn(`[Sync] Telegram image send failed for ${job.source_file_name}, sending Drive link instead`);
+          const driveLink = `https://drive.google.com/file/d/${uploadedImageId}/view`;
+          await sendTextToImageChat(`Enhanced: ${job.source_file_name}\nGagal kirim gambar, ini link Drive:\n${driveLink}`).catch(() => {});
+        }
       } catch (err) {
         console.error(`[Sync] Telegram image send error:`, err);
+        const driveLink = `https://drive.google.com/file/d/${uploadedImageId}/view`;
+        await sendTextToImageChat(`Enhanced: ${job.source_file_name}\nError: ${err instanceof Error ? err.message : String(err)}\nDrive: ${driveLink}`).catch(() => {});
       }
 
       await updateJob(jobId, { image_output_file_id: uploadedImageId, source_file_id: uploadedImageId });
@@ -463,9 +475,15 @@ export async function syncJob(jobId: string): Promise<{ success: boolean; status
       // Send to Telegram video bot
       try {
         const sent = await sendVideoToTelegram(videoBuffer, videoName, `Video: ${videoName}`);
-        if (!sent) console.warn(`[Sync] Telegram video send failed for ${videoName}`);
+        if (!sent) {
+          console.warn(`[Sync] Telegram video send failed for ${videoName}, sending Drive link instead`);
+          const driveLink = `https://drive.google.com/file/d/${uploadedVideoId}/view`;
+          await sendTextToVideoChat(`Video: ${videoName}\nGagal kirim video, ini link Drive:\n${driveLink}`).catch(() => {});
+        }
       } catch (err) {
         console.error(`[Sync] Telegram video send error:`, err);
+        const driveLink = `https://drive.google.com/file/d/${uploadedVideoId}/view`;
+        await sendTextToVideoChat(`Video: ${videoName}\nError: ${err instanceof Error ? err.message : String(err)}\nDrive: ${driveLink}`).catch(() => {});
       }
 
       await updateJob(jobId, {

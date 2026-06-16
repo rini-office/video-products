@@ -112,3 +112,55 @@ export async function sendVideoToTelegram(
       caption,
    );
 }
+
+// ── Text message (used as fallback when media send fails) ──────────────────
+
+async function sendText(
+   botTokenKey: string,
+   chatIdKey: string,
+   text: string,
+): Promise<boolean> {
+   const token = await getConfig(botTokenKey);
+   const chatId = await getConfig(chatIdKey);
+
+   if (!token || !chatId) return false; // not configured — silently skip
+
+   const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
+
+   try {
+      const response = await fetch(url, {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ chat_id: chatId, text }),
+      });
+      const result: TelegramResult = await response.json();
+
+      if (!result.ok) {
+         console.error(`[Telegram] sendMessage error:`, result.description);
+         return false;
+      }
+
+      console.log(`[Telegram] Message sent to chat ${chatId}`);
+      return true;
+   } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Telegram] sendMessage network error:`, msg);
+      return false;
+   }
+}
+
+/**
+ * Sends a text message to the Telegram video chat.
+ * Used as fallback when video upload fails (includes Drive link).
+ */
+export async function sendTextToVideoChat(text: string): Promise<boolean> {
+   return sendText('telegram_video_bot_token', 'telegram_video_chat_id', text);
+}
+
+/**
+ * Sends a text message to the Telegram image chat.
+ * Used as fallback when image upload fails (includes Drive link).
+ */
+export async function sendTextToImageChat(text: string): Promise<boolean> {
+   return sendText('telegram_image_bot_token', 'telegram_image_chat_id', text);
+}
