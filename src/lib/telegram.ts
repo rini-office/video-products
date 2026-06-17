@@ -172,7 +172,8 @@ export async function sendTextToImageChat(text: string): Promise<boolean> {
 /**
  * Sends a confirmation prompt to the image chat asking user to choose
  * "iya" (proceed to video) or "ulang" (redo image generation).
- * Returns the sent message's message_id for reply tracking.
+ * Uses inline keyboard for clean UX — user just taps a button.
+ * Returns the sent message's message_id.
  */
 export async function sendConfirmationPrompt(
   jobId: string,
@@ -183,15 +184,7 @@ export async function sendConfirmationPrompt(
 
   if (!token || !chatId) return null;
 
-  const text = [
-    `✅ Gambar selesai: ${fileName}`,
-    ``,
-    `Balas dengan:`,
-    `• "iya" — lanjut buat video`,
-    `• "ulang" — ulang gambar yang sama`,
-    ``,
-    `[ref:${jobId}]`,
-  ].join('\n');
+  const text = `✅ Gambar selesai: ${fileName}\n\nApa selanjutnya?`;
 
   const url = `${TELEGRAM_API_BASE}/bot${token}/sendMessage`;
 
@@ -199,7 +192,18 @@ export async function sendConfirmationPrompt(
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '✅ Iya — lanjut video', callback_data: `confirm:${jobId}:iya` },
+              { text: '🔄 Ulang — gambar ulang', callback_data: `confirm:${jobId}:ulang` },
+            ],
+          ],
+        },
+      }),
     });
     const result: TelegramResult = await response.json();
 
@@ -218,6 +222,31 @@ export async function sendConfirmationPrompt(
 }
 
 // ── Bot webhook setup ─────────────────────────────────────────────────────
+
+/**
+ * Answers a callback query from an inline keyboard button.
+ * Must be called quickly to stop the loading spinner on the user's device.
+ */
+export async function answerCallbackQuery(
+  callbackQueryId: string,
+  text?: string,
+): Promise<boolean> {
+  const token = await getConfig('telegram_image_bot_token');
+  if (!token) return false;
+
+  const url = `${TELEGRAM_API_BASE}/bot${token}/answerCallbackQuery`;
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: callbackQueryId, text }),
+    });
+    const result: TelegramResult = await response.json();
+    return result.ok;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Registers a webhook URL with the Telegram Bot API so Telegram
