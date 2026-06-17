@@ -109,7 +109,7 @@ export interface Job {
   id: string;
   source_file_name: string;
   source_file_id: string;
-  status: 'pending' | 'queued' | 'processing_image' | 'processing_video' | 'completed' | 'failed';
+  status: 'pending' | 'queued' | 'processing_image' | 'awaiting_confirmation' | 'processing_video' | 'completed' | 'failed';
   kie_task_id: string | null;
   output_url: string | null;
   output_file_id: string | null;

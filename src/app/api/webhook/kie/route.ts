@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { updateJob, markFileProcessed } from '@/lib/db';
 import { downloadVideo, downloadImage, verifyWebhookSignature } from '@/lib/kie';
-import { uploadFile, getFileUrl } from '@/lib/drive';
+import { uploadFile } from '@/lib/drive';
 import { getConfig, getDb } from '@/lib/db';
-import { createImageToVideoTask } from '@/lib/kie';
-import { sendImageToTelegram, sendVideoToTelegram, sendTextToImageChat, sendTextToVideoChat } from '@/lib/telegram';
+import { sendImageToTelegram, sendVideoToTelegram, sendTextToImageChat, sendTextToVideoChat, sendConfirmationPrompt } from '@/lib/telegram';
 
 export const runtime = 'nodejs';
 
@@ -134,31 +133,22 @@ async function handleImageCompletion(
       await sendTextToImageChat(`Enhanced: ${job.source_file_name}\nError: ${err instanceof Error ? err.message : String(err)}\nDrive: ${driveLink}`).catch(() => {});
     }
 
-    await updateJob(job.id, { image_output_file_id: uploadedImageId, source_file_id: uploadedImageId });
+    await updateJob(job.id, { image_output_file_id: uploadedImageId });
 
-    // Mark source file as processed so it won't be re-processed on next run
+    // Mark source file as processed so it won't be re-processed on next pipeline run
     if (job.source_file_id) {
       await markFileProcessed(job.source_file_id);
     }
 
-    // Get Drive URL and trigger video generation
-    const driveImageUrl = await getFileUrl(uploadedImageId);
-    const defaultPrompt = await getConfig('default_prompt') || undefined;
-    const defaultDuration = parseInt(await getConfig('default_duration') || '10', 10);
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-    const callbackUrl = appUrl.includes('localhost') ? undefined : `${appUrl}/api/webhook/kie`;
+    // Pause: wait for user confirmation before creating video
+    await updateJob(job.id, { status: 'awaiting_confirmation' });
 
-    const videoTaskId = await createImageToVideoTask({
-      imageUrl: driveImageUrl,
-      prompt: defaultPrompt,
-      duration: defaultDuration,
-      model: 'grok-imagine/image-to-video',
-      resolution: '720p',
-      callBackUrl: callbackUrl,
-    });
+    const promptMsgId = await sendConfirmationPrompt(job.id, job.source_file_name);
+    if (promptMsgId) {
+      console.log(`[Webhook] Confirmation prompt sent for job ${job.id} (msg_id: ${promptMsgId})`);
+    }
 
-    await updateJob(job.id, { kie_task_id: videoTaskId, status: 'processing_video' });
-    console.log(`[Webhook] Video task created: ${videoTaskId} for job ${job.id}`);
+    console.log(`[Webhook] Job ${job.id} awaiting confirmation: reply "iya" to proceed or "ulang" to redo`);
 
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
