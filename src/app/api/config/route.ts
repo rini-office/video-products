@@ -42,6 +42,8 @@ export async function GET() {
         telegram_image_chat_id: config.telegram_image_chat_id || '',
         telegram_video_bot_token: config.telegram_video_bot_token ? '••••••••' : '',
         telegram_video_chat_id: config.telegram_video_chat_id || '',
+        telegram_input_bot_token: config.telegram_input_bot_token ? '••••••••' : '',
+        telegram_input_chat_id: config.telegram_input_chat_id || '',
       },
       driveReady,
       folders,
@@ -80,6 +82,8 @@ export async function POST(request: NextRequest) {
       'telegram_image_chat_id',
       'telegram_video_bot_token',
       'telegram_video_chat_id',
+      'telegram_input_bot_token',
+      'telegram_input_chat_id',
     ];
 
     for (const field of fields) {

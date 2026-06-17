@@ -40,6 +40,8 @@ export default function ConfigPanel() {
     telegram_image_chat_id: '',
     telegram_video_bot_token: '',
     telegram_video_chat_id: '',
+    telegram_input_bot_token: '',
+    telegram_input_chat_id: '',
   });
 
   const fetchConfig = useCallback(async () => {
@@ -365,6 +367,19 @@ export default function ConfigPanel() {
           <div>
             <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Chat ID</label>
             <input type="text" value={form.telegram_video_chat_id} onChange={(e) => updateField('telegram_video_chat_id', e.target.value)} placeholder="-100123456789 or @channelusername" className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
+          </div>
+        </div>
+
+        <div className="border border-green-200 dark:border-green-800 rounded-lg p-4 space-y-3 bg-green-50/50 dark:bg-green-900/10">
+          <h4 className="text-sm font-medium text-green-700 dark:text-green-300">Input Bot</h4>
+          <p className="text-xs text-green-600 dark:text-green-400">Kirim foto ke group ini → otomatis upload ke Drive + proses pipeline.</p>
+          <div>
+            <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Bot Token</label>
+            <input type="password" value={form.telegram_input_bot_token} onChange={(e) => updateField('telegram_input_bot_token', e.target.value)} placeholder="123456:ABC-DEF..." className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1">Chat ID</label>
+            <input type="text" value={form.telegram_input_chat_id} onChange={(e) => updateField('telegram_input_chat_id', e.target.value)} placeholder="-100123456789 or @channelusername" className="w-full px-3 py-2 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" />
           </div>
         </div>
       </div>

@@ -245,6 +245,8 @@ const ENV_FALLBACKS: Record<string, string | undefined> = {
   telegram_image_chat_id: process.env.TELEGRAM_IMAGE_CHAT_ID,
   telegram_video_bot_token: process.env.TELEGRAM_VIDEO_BOT_TOKEN,
   telegram_video_chat_id: process.env.TELEGRAM_VIDEO_CHAT_ID,
+  telegram_input_bot_token: process.env.TELEGRAM_INPUT_BOT_TOKEN,
+  telegram_input_chat_id: process.env.TELEGRAM_INPUT_CHAT_ID,
 };
 
 export async function getConfig(key: string): Promise<string | undefined> {
