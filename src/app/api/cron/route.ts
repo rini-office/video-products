@@ -21,7 +21,6 @@ export async function GET(request: NextRequest) {
     const lastRun = await getConfig('last_run');
 
     if (!shouldRunCron(cronExpression, lastRun, new Date(), timezone)) {
-      // Calculate next run for info
       const nextRun = getNextCronTime(cronExpression, new Date(), timezone);
       return NextResponse.json({
         skipped: true,

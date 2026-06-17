@@ -1,4 +1,6 @@
-import { getConfig } from './db';
+import { getConfig, getJob, updateJob, getDb, setConfig } from './db';
+import { createImageToVideoTask, enhanceImage, generateImage } from './kie';
+import { getFileUrl } from './drive';
 
 /**
  * Sends a file to a Telegram bot via the Bot API.
@@ -301,6 +303,8 @@ export interface TelegramMessage {
   messageId: number;
   chatId: string;
   text: string;
+  replyToText?: string;
+  updateId: number;
 }
 
 /**
@@ -319,7 +323,7 @@ export async function pollForConfirmationMessages(
   }
 
   const params = new URLSearchParams();
-  params.set('timeout', '5');
+  params.set('timeout', '0'); // quick poll for cron — no long-polling
   params.set('allowed_updates', JSON.stringify(['message']));
   if (offset) {
     params.set('offset', String(offset));
@@ -337,6 +341,10 @@ export async function pollForConfirmationMessages(
           message_id: number;
           chat: { id: number | string };
           text?: string;
+          reply_to_message?: {
+            message_id: number;
+            text?: string;
+          };
         };
       }>;
     };
@@ -358,6 +366,8 @@ export async function pollForConfirmationMessages(
           messageId: update.message.message_id,
           chatId: String(update.message.chat.id),
           text: update.message.text,
+          replyToText: update.message.reply_to_message?.text || undefined,
+          updateId: update.update_id,
         });
       }
     }
@@ -367,4 +377,223 @@ export async function pollForConfirmationMessages(
     console.error('[Telegram] getUpdates error:', err);
     return { messages: [], nextOffset: offset ?? 0 };
   }
+}
+
+// ── Confirmation processing (shared by webhook & cron polling) ───────────
+
+function getCallbackUrl(): string | undefined {
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  if (appUrl.includes('localhost') || appUrl.includes('127.0.0.1') || appUrl.includes('192.168')) {
+    return undefined;
+  }
+  return `${appUrl}/api/webhook/kie`;
+}
+
+/**
+ * Extracts a job ID from a confirmation message text.
+ * Looks for pattern: [ref:UUID]
+ */
+export function extractJobId(text: string): string | null {
+  const match = text.match(/\[ref:([a-f0-9-]+)\]/i);
+  return match ? match[1] : null;
+}
+
+/**
+ * Processes a confirmation action ("iya" or "ulang") for a given job.
+ * This is the shared core logic used by both webhook and cron polling.
+ */
+export async function processConfirmationJob(
+  jobId: string,
+  action: 'iya' | 'ulang',
+): Promise<{ success: boolean; error?: string }> {
+  const job = await getJob(jobId);
+  if (!job) {
+    return { success: false, error: 'Job not found' };
+  }
+
+  if (job.status !== 'awaiting_confirmation') {
+    return { success: false, error: `Job ${jobId} is not awaiting confirmation (status: ${job.status})` };
+  }
+
+  console.log(`[Telegram] Processing "${action}" for job ${jobId}`);
+
+  if (action === 'iya') {
+    return handleIya(job);
+  } else {
+    return handleUlang(job);
+  }
+}
+
+async function handleIya(
+  job: NonNullable<Awaited<ReturnType<typeof getJob>>>
+): Promise<{ success: boolean; error?: string }> {
+  if (!job.image_output_file_id) {
+    const err = 'No enhanced image found — cannot create video';
+    await updateJob(job.id, { status: 'failed', error: err, completed_at: new Date().toISOString() });
+    return { success: false, error: err };
+  }
+
+  try {
+    const driveImageUrl = await getFileUrl(job.image_output_file_id);
+    const defaultPrompt = await getConfig('default_prompt') || undefined;
+    const defaultDuration = parseInt(await getConfig('default_duration') || '10', 10);
+    const callbackUrl = getCallbackUrl();
+
+    const videoTaskId = await createImageToVideoTask({
+      imageUrl: driveImageUrl,
+      prompt: defaultPrompt,
+      duration: defaultDuration,
+      model: 'grok-imagine/image-to-video',
+      resolution: '720p',
+      callBackUrl: callbackUrl,
+    });
+
+    await updateJob(job.id, { kie_task_id: videoTaskId, status: 'processing_video' });
+    console.log(`[Telegram] Video task created: ${videoTaskId} for job ${job.id}`);
+    return { success: true };
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    await updateJob(job.id, { status: 'failed', error: errorMsg, completed_at: new Date().toISOString() });
+    return { success: false, error: errorMsg };
+  }
+}
+
+async function handleUlang(
+  job: NonNullable<Awaited<ReturnType<typeof getJob>>>
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const callbackUrl = getCallbackUrl();
+
+    if (job.source_file_id) {
+      // Image-to-Image: re-enhance the original image
+      const originalImageUrl = await getFileUrl(job.source_file_id);
+      const enhancePrompt = await getConfig('default_image_to_image_prompt') || 'Enhance this image, improve quality, add cinematic lighting';
+      const imageAspectRatio = await getConfig('image_aspect_ratio') || 'auto';
+      const imageResolution = await getConfig('image_resolution') || '1K';
+      const imageOutputFormat = await getConfig('image_output_format') || 'jpg';
+
+      console.log(`[Telegram] Re-enhancing original image for job ${job.id}`);
+
+      const newImageTaskId = await enhanceImage({
+        imageUrl: originalImageUrl,
+        prompt: enhancePrompt,
+        model: 'nano-banana-2',
+        aspectRatio: imageAspectRatio,
+        resolution: imageResolution,
+        outputFormat: imageOutputFormat,
+        callBackUrl: callbackUrl,
+      });
+
+      await updateJob(job.id, {
+        image_gen_task_id: newImageTaskId,
+        status: 'processing_image',
+        error: null,
+        kie_task_id: null,
+        output_url: null,
+        output_file_id: null,
+        image_output_file_id: null,
+      });
+
+      console.log(`[Telegram] Image re-enhancement submitted: ${newImageTaskId}`);
+    } else {
+      // Text-to-Image: re-generate from the same prompt
+      const prompt = job.image_prompt || await getConfig('default_image_prompt') || 'A beautiful cinematic scene';
+      const imageResolution = await getConfig('text_image_resolution') || '1024x1024';
+
+      console.log(`[Telegram] Re-generating image for job ${job.id}`);
+
+      const newImageTaskId = await generateImage({
+        prompt,
+        model: 'grok-imagine/text-to-image',
+        count: 1,
+        resolution: imageResolution,
+        callBackUrl: callbackUrl,
+      });
+
+      await updateJob(job.id, {
+        image_gen_task_id: newImageTaskId,
+        status: 'processing_image',
+        error: null,
+        kie_task_id: null,
+        output_url: null,
+        output_file_id: null,
+        image_output_file_id: null,
+      });
+
+      console.log(`[Telegram] Image re-generation submitted: ${newImageTaskId}`);
+    }
+
+    return { success: true };
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    await updateJob(job.id, { status: 'failed', error: errorMsg, completed_at: new Date().toISOString() });
+    return { success: false, error: errorMsg };
+  }
+}
+
+/**
+ * Polls Telegram for confirmation messages and processes any "iya"/"ulang" replies.
+ * Meant to be called periodically (e.g., from the cron job).
+ * Uses persisted offset in config to avoid re-processing old messages.
+ */
+export async function processTelegramConfirmations(): Promise<{
+  processed: number;
+  errors: string[];
+}> {
+  const result = { processed: 0, errors: [] as string[] };
+
+  try {
+    const offsetStr = await getConfig('telegram_poll_offset');
+    const offset = offsetStr ? parseInt(offsetStr, 10) : undefined;
+
+    const { messages, nextOffset } = await pollForConfirmationMessages(offset);
+
+    await setConfig('telegram_poll_offset', String(nextOffset));
+
+    for (const msg of messages) {
+      const userText = msg.text.trim().toLowerCase();
+      if (userText !== 'iya' && userText !== 'ulang') {
+        continue; // not a confirmation command
+      }
+
+      // Try to extract job ID from the replied-to message text
+      let jobId: string | null = null;
+      if (msg.replyToText) {
+        jobId = extractJobId(msg.replyToText);
+      }
+
+      // Fallback: find the most recent awaiting_confirmation job
+      if (!jobId) {
+        try {
+          const db = await getDb();
+          const { rows } = await db.query<{ id: string }>(
+            `SELECT id FROM jobs WHERE status = 'awaiting_confirmation' ORDER BY updated_at DESC LIMIT 1`
+          );
+          if (rows.length > 0) {
+            jobId = rows[0].id;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      if (!jobId) {
+        console.log(`[Telegram] No awaiting job found for confirmation msg: "${userText}"`);
+        continue;
+      }
+
+      const res = await processConfirmationJob(jobId, userText as 'iya' | 'ulang');
+      if (res.success) {
+        result.processed++;
+      } else {
+        result.errors.push(res.error || 'unknown error');
+      }
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[Telegram] processTelegramConfirmations error:', msg);
+    result.errors.push(msg);
+  }
+
+  return result;
 }
