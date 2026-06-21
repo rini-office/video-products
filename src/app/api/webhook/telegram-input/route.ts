@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getConfig } from '@/lib/db';
-import { uploadFile } from '@/lib/drive';
+import { uploadFile, AUTH_EXPIRED_MESSAGE } from '@/lib/drive';
 import { downloadTelegramFile, sendTextToInputChat } from '@/lib/telegram';
 import { executePipeline } from '@/lib/scheduler';
 
@@ -81,11 +81,29 @@ export async function POST(request: NextRequest) {
     const inputFolderId = await getConfig('drive_input_folder');
     if (!inputFolderId) {
       console.error('[TelegramInput] drive_input_folder not configured');
-      await sendTextToInputChat('❌ Input folder belum dikonfigurasi.').catch(() => {});
+      await sendTextToInputChat('❌ Input folder belum dikonfigurasi. Buka web dashboard untuk setup.').catch(() => {});
       return NextResponse.json({ ok: false, error: 'input folder not configured' }, { status: 500 });
     }
 
-    const uploadedId = await uploadFile(inputFolderId, fileName!, downloaded.buffer, 'image/jpeg');
+    let uploadedId: string;
+    try {
+      uploadedId = await uploadFile(inputFolderId, fileName!, downloaded.buffer, 'image/jpeg');
+    } catch (uploadErr) {
+      const uploadMsg = uploadErr instanceof Error ? (uploadErr.message ?? String(uploadErr)) : String(uploadErr);
+      console.error('[TelegramInput] Drive upload error:', uploadMsg);
+
+      if (uploadMsg.includes(AUTH_EXPIRED_MESSAGE)) {
+        await sendTextToInputChat(
+          '❌ Google Drive tidak terhubung (token expired/revoked).\n\n' +
+          'Silakan buka web dashboard → Settings → klik "Connect Google Drive" untuk autentikasi ulang.'
+        ).catch(() => {});
+        return NextResponse.json({ ok: false, error: 'drive_auth_expired' }, { status: 500 });
+      }
+
+      await sendTextToInputChat(`❌ Gagal upload ke Drive: ${uploadMsg}`).catch(() => {});
+      return NextResponse.json({ ok: false, error: 'upload failed' }, { status: 500 });
+    }
+
     console.log(`[TelegramInput] Uploaded to Drive: ${fileName} (${uploadedId})`);
 
     // Feedback: image received
@@ -102,7 +120,11 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ ok: true, fileId: uploadedId, fileName });
   } catch (error) {
-    console.error('[TelegramInput] Error:', error);
+    console.error('[TelegramInput] Unhandled error:', error);
+    // Try to notify user even on unexpected errors
+    try {
+      await sendTextToInputChat('❌ Terjadi error internal. Silakan coba lagi nanti.').catch(() => {});
+    } catch {}
     return NextResponse.json({ error: 'Internal error' }, { status: 500 });
   }
 }
